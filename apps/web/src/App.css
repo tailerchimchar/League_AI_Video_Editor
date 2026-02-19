@@ -1,0 +1,100 @@
+/* ── Reset & base ─────────────────────────────────────────────────── */
+*,
+*::before,
+*::after {
+  box-sizing: border-box;
+  margin: 0;
+  padding: 0;
+}
+
+body {
+  font-family: "Inter", system-ui, -apple-system, sans-serif;
+  background: #0f1115;
+  color: #e0e0e0;
+  min-height: 100vh;
+}
+
+/* ── App shell ────────────────────────────────────────────────────── */
+.app {
+  max-width: 720px;
+  margin: 0 auto;
+  padding: 3rem 1.5rem;
+  display: flex;
+  flex-direction: column;
+  gap: 1.25rem;
+}
+
+h1 {
+  font-size: 1.75rem;
+  font-weight: 700;
+  color: #fff;
+}
+
+.subtitle {
+  color: #888;
+  font-size: 0.95rem;
+  margin-top: -0.5rem;
+}
+
+/* ── Drop zone ────────────────────────────────────────────────────── */
+.dropzone {
+  border: 2px dashed #333;
+  border-radius: 12px;
+  padding: 3rem 1.5rem;
+  text-align: center;
+  cursor: pointer;
+  transition: border-color 0.15s, background 0.15s;
+}
+
+.dropzone:hover,
+.dropzone.drag-over {
+  border-color: #646cff;
+  background: rgba(100, 108, 255, 0.06);
+}
+
+.dropzone-label {
+  font-size: 1rem;
+  color: #ccc;
+}
+
+.dropzone-hint {
+  margin-top: 0.5rem;
+  font-size: 0.8rem;
+  color: #666;
+}
+
+/* ── Status bar ───────────────────────────────────────────────────── */
+.status-bar {
+  padding: 0.75rem 1rem;
+  border-radius: 8px;
+  font-size: 0.9rem;
+}
+
+.status-bar.uploading,
+.status-bar.processing {
+  background: rgba(100, 108, 255, 0.1);
+  color: #8a90ff;
+}
+
+.status-bar.done {
+  background: rgba(46, 204, 113, 0.1);
+  color: #2ecc71;
+}
+
+.status-bar.error {
+  background: rgba(231, 76, 60, 0.1);
+  color: #e74c3c;
+}
+
+.error-code {
+  font-size: 0.75rem;
+  opacity: 0.7;
+  margin-left: 0.25rem;
+}
+
+/* ── Video player ─────────────────────────────────────────────────── */
+.player {
+  width: 100%;
+  border-radius: 10px;
+  background: #000;
+}
