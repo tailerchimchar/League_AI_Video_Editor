@@ -32,6 +32,10 @@ from storage.local import storage
 
 logger = logging.getLogger(__name__)
 
+# In-memory extraction progress: job_id -> {"extracted": int, "total": int, "phase": str}
+# Updated from the extraction thread, read by the status endpoint.
+live_progress: dict[str, dict] = {}
+
 _detector: YoloDetector | None = None
 _champion_identifier: ChampionIdentifier | None = None
 
@@ -186,6 +190,9 @@ async def run_extraction_pipeline(
         )
         logger.info("Estimated %d frames to extract (fps=%.1f, ocr=%s)", estimated_total, sample_fps, enable_ocr)
 
+        # Publish live progress for the status endpoint
+        live_progress[job_id] = {"extracted": 0, "total": estimated_total, "phase": "extracting"}
+
         # Process all frames with tracking for temporal consistency
         prev_ocr: dict | None = None
         prev_ts: int = 0
@@ -244,6 +251,8 @@ async def run_extraction_pipeline(
                 prev_ocr = payload["ocr_data"]
                 prev_ts = ts_ms
                 count += 1
+                # Update live progress for the status endpoint (thread-safe: simple dict write)
+                live_progress[job_id] = {"extracted": count, "total": estimated_total, "phase": "extracting"}
                 if count % 10 == 0:
                     logger.info("Extracted %d/%d frames...", count, estimated_total)
             return all_payloads
@@ -251,6 +260,7 @@ async def run_extraction_pipeline(
         all_payloads = await asyncio.to_thread(_extract_all)
         total = len(all_payloads)
         logger.info("Frame extraction done: %d frames. Inserting into DB...", total)
+        live_progress[job_id] = {"extracted": total, "total": total, "phase": "inserting"}
 
         # Batch insert with progress updates
         for i in range(0, total, BATCH_INSERT_SIZE):
@@ -275,9 +285,11 @@ async def run_extraction_pipeline(
             await batch_insert_segments(segments)
 
         await update_job_status(job_id, "completed")
+        live_progress.pop(job_id, None)
         logger.info("Extraction completed for video %s, job %s: %d frames, %d segments",
                      video_id, job_id, total, len(segments))
 
     except Exception as e:
         logger.exception("Extraction pipeline failed for video %s, job %s", video_id, job_id)
+        live_progress.pop(job_id, None)
         await update_job_status(job_id, "failed", error_message=str(e))

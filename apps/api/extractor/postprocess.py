@@ -79,17 +79,21 @@ def _detect_health_bar_color(
     frame: np.ndarray,
     bbox: list[float],
 ) -> str | None:
-    """Check the region above a detection bbox for health bar color.
+    """Check the health bar region inside the top portion of a detection bbox.
+
+    The YOLO bbox typically includes the name text + health bar + champion body.
+    The health bar sits inside the bbox, roughly 5-25% from the top.
 
     Returns "green", "blue", "red", or None if inconclusive.
     """
     h_frame, w_frame = frame.shape[:2]
     x1, y1, x2, y2 = int(bbox[0]), int(bbox[1]), int(bbox[2]), int(bbox[3])
+    det_h = y2 - y1
 
-    # Health bar sits just above the entity
-    bar_h = max(8, int((y2 - y1) * 0.15))
-    crop_y1 = max(0, y1 - bar_h)
-    crop_y2 = y1
+    # Health bar is inside the top portion of the bbox.
+    # Scan from 0% to 10% — tight crop to avoid mana bars below.
+    crop_y1 = max(0, y1)
+    crop_y2 = min(h_frame, y1 + int(det_h * 0.10))
     crop_x1 = max(0, x1)
     crop_x2 = min(w_frame, x2)
 
@@ -162,6 +166,7 @@ def correct_detections(
 
         new_class = _CLASS_BY_COLOR[class_name][color]
         if new_class != class_name:
+            det["original_class"] = class_name
             det["class_name"] = new_class
             det["health_bar_corrected"] = True
             corrected += 1

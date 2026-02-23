@@ -72,7 +72,7 @@ export default function ExtractionStatus({
         } catch {
           // Ignore transient poll errors
         }
-      }, 3000);
+      }, 1500);
     } catch {
       onError("Network error starting extraction");
       setExtracting(false);
@@ -81,6 +81,36 @@ export default function ExtractionStatus({
 
   const progress = status?.progress ?? 0;
   const frameCount = status?.frame_count ?? 0;
+  const extractedFrames = status?.extracted_frames;
+  const totalFrames = status?.total_frames;
+  const phase = status?.phase;
+
+  // Compute a combined progress: extraction phase = 0-80%, insert phase = 80-100%
+  let combinedProgress = progress; // DB progress (0-1) used for insert phase
+  if (phase === "extracting" && totalFrames && totalFrames > 0) {
+    combinedProgress = ((extractedFrames ?? 0) / totalFrames) * 0.8;
+  } else if (phase === "inserting") {
+    combinedProgress = 0.8 + progress * 0.2;
+  }
+
+  function getStatusText(): string {
+    if (status?.status === "completed") {
+      return `Extraction complete — ${frameCount} frames analyzed`;
+    }
+    if (status?.status === "failed") {
+      return `Extraction failed: ${status.error_message}`;
+    }
+    if (phase === "extracting" && totalFrames) {
+      return `Extracting ${extractedFrames ?? 0}/${totalFrames} frames...`;
+    }
+    if (phase === "inserting") {
+      return `Saving to database... ${Math.round(progress * 100)}%`;
+    }
+    if (progress > 0) {
+      return `Inserting data... ${Math.round(progress * 100)}% (${frameCount} frames)`;
+    }
+    return "Starting extraction...";
+  }
 
   return (
     <div className="extraction-panel">
@@ -106,18 +136,10 @@ export default function ExtractionStatus({
           <div className="progress-bar-container">
             <div
               className="progress-bar-fill"
-              style={{ width: `${Math.round(progress * 100)}%` }}
+              style={{ width: `${Math.round(Math.min(combinedProgress, 1) * 100)}%` }}
             />
           </div>
-          <p className="extraction-info">
-            {status?.status === "completed"
-              ? `Extraction complete — ${frameCount} frames analyzed`
-              : status?.status === "failed"
-                ? `Extraction failed: ${status.error_message}`
-                : progress === 0
-                  ? "Extracting frames & running OCR (this may take a minute)..."
-                  : `Inserting data... ${Math.round(progress * 100)}% (${frameCount} frames)`}
-          </p>
+          <p className="extraction-info">{getStatusText()}</p>
         </div>
       )}
     </div>

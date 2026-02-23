@@ -38,6 +38,10 @@ export interface ExtractionStatus {
   error_message: string | null;
   started_at: string | null;
   completed_at: string | null;
+  /** Live extraction progress (only present during extraction) */
+  extracted_frames?: number;
+  total_frames?: number;
+  phase?: "extracting" | "inserting";
 }
 
 export interface Detection {
@@ -138,4 +142,62 @@ export function getVideoUrl(videoId: string): string {
 /** Get report SSE URL. */
 export function getReportUrl(videoId: string): string {
   return `${BASE}/videos/${videoId}/report`;
+}
+
+// ── Debug / Admin endpoints ─────────────────────────────────────────
+
+export interface VideoListItem {
+  id: string;
+  filename: string;
+  duration_ms: number | null;
+  width: number | null;
+  height: number | null;
+  status: string;
+  created_at: string;
+}
+
+export interface HealthBarDetection {
+  class_name: string;
+  original_class?: string;
+  corrected?: boolean;
+  confidence: number;
+  bbox: [number, number, number, number];
+  health_bar_color: string | null;
+  color_fractions: { green: number; blue: number; red: number };
+  crop_b64: string | null;
+  context_b64: string | null;
+}
+
+export interface HealthBarDebugResponse {
+  frame_index: number;
+  timestamp_ms: number;
+  frame_width: number;
+  frame_height: number;
+  max_frame_index: number;
+  detections: HealthBarDetection[];
+}
+
+/** List all uploaded videos. */
+export async function listVideos(
+  params?: { limit?: number; offset?: number }
+): Promise<{ videos: VideoListItem[] }> {
+  const query = new URLSearchParams();
+  if (params?.limit != null) query.set("limit", String(params.limit));
+  if (params?.offset != null) query.set("offset", String(params.offset));
+  const qs = query.toString();
+  const res = await fetch(`${BASE}/videos${qs ? `?${qs}` : ""}`);
+  return handleResponse(res);
+}
+
+/** Get health bar debug analysis for a single frame. */
+export async function getHealthBarDebug(
+  videoId: string,
+  frameIndex: number,
+  sampleFps?: number,
+): Promise<HealthBarDebugResponse> {
+  const query = new URLSearchParams();
+  query.set("frame_index", String(frameIndex));
+  if (sampleFps != null) query.set("sample_fps", String(sampleFps));
+  const res = await fetch(`${BASE}/videos/${videoId}/debug/health-bar-colors?${query}`);
+  return handleResponse(res);
 }

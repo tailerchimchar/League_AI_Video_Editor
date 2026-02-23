@@ -621,3 +621,67 @@ h1 {
   margin: 0.5rem 0;
   color: #999;
 }
+
+/* ── Nav links (page-level tabs) ─────────────────────────────────── */
+.nav-links {
+  display: flex;
+  gap: 0.25rem;
+  background: #1a1d24;
+  border-radius: 8px;
+  padding: 3px;
+}
+
+.nav-link {
+  padding: 0.4rem 0.9rem;
+  border-radius: 6px;
+  background: transparent;
+  color: #888;
+  font-size: 0.8rem;
+  font-weight: 500;
+  text-decoration: none;
+  transition: all 0.15s;
+}
+
+.nav-link.active {
+  background: #646cff;
+  color: #fff;
+}
+
+.nav-link:hover:not(.active) {
+  color: #ccc;
+}
+
+/* ── Filter chips (detection category toggles) ───────────────────── */
+.filter-chips {
+  display: flex;
+  gap: 0.25rem;
+  margin-left: 0.25rem;
+  flex-wrap: wrap;
+}
+
+.filter-chip {
+  padding: 0.2rem 0.5rem;
+  border: 1px solid color-mix(in srgb, var(--chip-color) 40%, transparent);
+  border-radius: 10px;
+  background: transparent;
+  color: color-mix(in srgb, var(--chip-color) 70%, #888);
+  font-size: 0.65rem;
+  font-weight: 500;
+  cursor: pointer;
+  transition: all 0.15s;
+  white-space: nowrap;
+  line-height: 1;
+}
+
+.filter-chip:hover {
+  border-color: var(--chip-color);
+  color: var(--chip-color);
+}
+
+.filter-chip.active {
+  background: color-mix(in srgb, var(--chip-color) 25%, transparent);
+  border-color: var(--chip-color);
+  color: var(--chip-color);
+}
+
+/* Admin page styles are in Tailwind — see AdminPage.tsx */

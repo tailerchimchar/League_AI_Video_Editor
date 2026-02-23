@@ -1,5 +1,12 @@
 import { useRef, useState, useEffect, useCallback } from "react";
-import { getFrames, type FramePayload } from "../api/client";
+import { getFrames, type FramePayload, type Detection } from "../api/client";
+
+export interface DetectionFilters {
+  player: boolean;
+  allies: boolean;
+  enemies: boolean;
+  minions: boolean;
+}
 
 interface Props {
   videoRef: React.RefObject<HTMLVideoElement | null>;
@@ -9,6 +16,8 @@ interface Props {
   enabled: boolean;
   /** Bump this number to trigger a re-fetch of frame data (e.g., after extraction completes). */
   frameVersion: number;
+  /** Ref-based filter to avoid re-renders on the rAF loop. */
+  filtersRef?: React.RefObject<DetectionFilters>;
 }
 
 /** Crop regions at 1920x1080 base — must match apps/api/extractor/config.py */
@@ -87,7 +96,132 @@ function getDisplayLabel(det: { class_name: string; champion?: string | null; ch
   return `${cn} ${confPct}%`;
 }
 
-/** Binary search for closest frame by timestamp. */
+/** Determine if a detection should be drawn given the current filter state. */
+function shouldShowDetection(className: string, filters: DetectionFilters): boolean {
+  const isMinion = className.includes("minion");
+
+  // Minion sub-filter: hides minions from both ally and enemy categories
+  if (isMinion && !filters.minions) return false;
+
+  if (className === "played_champion") return filters.player;
+  if (className.startsWith("enemy_") || className.startsWith("enemy")) return filters.enemies;
+  if (className.startsWith("freindly_") || className.startsWith("friendly_")) return filters.allies;
+
+  // Other detections (structures, misc) — always show
+  return true;
+}
+
+/** Binary search: find the last frame with timestamp_ms <= timeMs. Returns index or -1. */
+function findFrameBefore(frames: FramePayload[], timeMs: number): number {
+  let lo = 0;
+  let hi = frames.length - 1;
+  let result = -1;
+  while (lo <= hi) {
+    const mid = (lo + hi) >> 1;
+    if (frames[mid].timestamp_ms <= timeMs) {
+      result = mid;
+      lo = mid + 1;
+    } else {
+      hi = mid - 1;
+    }
+  }
+  return result;
+}
+
+/** Interpolated detection for smooth rendering. */
+interface InterpDetection {
+  class_name: string;
+  confidence: number;
+  bbox: [number, number, number, number];
+  champion?: string | null;
+  champion_confidence?: number | null;
+  track_id?: number;
+  opacity: number; // 0-1, for fade in/out of entering/leaving tracks
+}
+
+/**
+ * Interpolate detections between two frames for smooth rendering.
+ * Matches by track_id, lerps bboxes, fades in/out unmatched tracks.
+ */
+function interpolateDetections(
+  prevFrame: FramePayload | null,
+  nextFrame: FramePayload | null,
+  t: number, // 0..1 between prevFrame and nextFrame
+): InterpDetection[] {
+  const prevDets = prevFrame?.detections ?? [];
+  const nextDets = nextFrame?.detections ?? [];
+
+  // Build track_id -> detection maps
+  const prevByTrack = new Map<number, Detection>();
+  const nextByTrack = new Map<number, Detection>();
+  const prevUntracked: Detection[] = [];
+  const nextUntracked: Detection[] = [];
+
+  for (const d of prevDets) {
+    if (d.track_id != null) prevByTrack.set(d.track_id, d);
+    else prevUntracked.push(d);
+  }
+  for (const d of nextDets) {
+    if (d.track_id != null) nextByTrack.set(d.track_id, d);
+    else nextUntracked.push(d);
+  }
+
+  const result: InterpDetection[] = [];
+  const handledNext = new Set<number>();
+
+  // Tracked objects present in prev frame
+  for (const [trackId, prev] of prevByTrack) {
+    const next = nextByTrack.get(trackId);
+    if (next) {
+      // Present in both frames — lerp bbox
+      handledNext.add(trackId);
+      const bbox: [number, number, number, number] = [
+        prev.bbox[0] + (next.bbox[0] - prev.bbox[0]) * t,
+        prev.bbox[1] + (next.bbox[1] - prev.bbox[1]) * t,
+        prev.bbox[2] + (next.bbox[2] - prev.bbox[2]) * t,
+        prev.bbox[3] + (next.bbox[3] - prev.bbox[3]) * t,
+      ];
+      // Use the closer frame's metadata
+      const src = t < 0.5 ? prev : next;
+      result.push({
+        class_name: src.class_name,
+        confidence: prev.confidence + (next.confidence - prev.confidence) * t,
+        bbox,
+        champion: src.champion,
+        champion_confidence: src.champion_confidence,
+        track_id: trackId,
+        opacity: 1,
+      });
+    } else {
+      // Only in prev frame — fade out as t increases
+      result.push({
+        ...prev,
+        track_id: trackId,
+        opacity: Math.max(0, 1 - t * 2), // fully faded at t=0.5
+      });
+    }
+  }
+
+  // Tracked objects only in next frame — fade in
+  for (const [trackId, next] of nextByTrack) {
+    if (handledNext.has(trackId)) continue;
+    result.push({
+      ...next,
+      track_id: trackId,
+      opacity: Math.max(0, (t - 0.5) * 2), // start appearing at t=0.5
+    });
+  }
+
+  // Untracked detections — show from the closer frame, no interpolation
+  const untrackedSrc = t < 0.5 ? prevUntracked : nextUntracked;
+  for (const d of untrackedSrc) {
+    result.push({ ...d, opacity: 1 });
+  }
+
+  return result;
+}
+
+/** Binary search for closest frame by timestamp (used for OCR). */
 function findClosestFrame(frames: FramePayload[], timeMs: number): FramePayload | null {
   if (frames.length === 0) return null;
   let lo = 0;
@@ -97,7 +231,6 @@ function findClosestFrame(frames: FramePayload[], timeMs: number): FramePayload 
     if (frames[mid].timestamp_ms < timeMs) lo = mid + 1;
     else hi = mid;
   }
-  // lo is the first frame >= timeMs; check if lo-1 is closer
   if (lo > 0) {
     const diffLo = Math.abs(frames[lo].timestamp_ms - timeMs);
     const diffPrev = Math.abs(frames[lo - 1].timestamp_ms - timeMs);
@@ -107,29 +240,24 @@ function findClosestFrame(frames: FramePayload[], timeMs: number): FramePayload 
 }
 
 function formatOcrValue(field: string, ocr: Record<string, unknown>): string {
-  // OCR data has a "raw" sub-object with the direct text per region,
-  // plus top-level parsed fields. Use raw for display labels.
   const raw = ocr.raw as Record<string, unknown> | undefined;
   const val = raw?.[field];
   if (val === undefined || val === null || val === "") return "—";
   return String(val);
 }
 
-export default function AIVisionOverlay({ videoRef, videoId, nativeWidth, nativeHeight, enabled, frameVersion }: Props) {
+export default function AIVisionOverlay({ videoRef, videoId, nativeWidth, nativeHeight, enabled, frameVersion, filtersRef }: Props) {
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const framesRef = useRef<FramePayload[] | null>(null);
   const rafRef = useRef<number>(0);
   const loadedVersionRef = useRef<number>(0);
 
-  // Keep a ref to CROP_REGIONS so the animation loop always reads the latest
-  // values after Vite HMR hot-swaps this module.
   const regionsRef = useRef(CROP_REGIONS);
   regionsRef.current = CROP_REGIONS;
 
   // Load frames when enabled, or re-fetch when frameVersion bumps
   useEffect(() => {
     if (!enabled) return;
-    // Skip if already loaded for this version
     if (framesRef.current && loadedVersionRef.current === frameVersion) return;
     let cancelled = false;
     (async () => {
@@ -148,7 +276,6 @@ export default function AIVisionOverlay({ videoRef, videoId, nativeWidth, native
 
   useEffect(() => {
     if (!enabled) {
-      // Clear canvas when disabled
       const canvas = canvasRef.current;
       if (canvas) {
         const ctx = canvas.getContext("2d");
@@ -170,7 +297,6 @@ export default function AIVisionOverlay({ videoRef, videoId, nativeWidth, native
       const elemW = video.clientWidth;
       const elemH = video.clientHeight;
 
-      // Resize canvas to match video element size (HiDPI-aware)
       if (canvas.width !== elemW * dpr || canvas.height !== elemH * dpr) {
         canvas.width = elemW * dpr;
         canvas.height = elemH * dpr;
@@ -187,9 +313,6 @@ export default function AIVisionOverlay({ videoRef, videoId, nativeWidth, native
       ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
       ctx.clearRect(0, 0, elemW, elemH);
 
-      // Compute actual video rendering rect within the element.
-      // The <video> uses object-fit:contain by default, so the video
-      // is letterboxed inside the element (controls bar eats into height).
       const intrinsicW = video.videoWidth || BASE_W;
       const intrinsicH = video.videoHeight || BASE_H;
       const videoAspect = intrinsicW / intrinsicH;
@@ -197,44 +320,38 @@ export default function AIVisionOverlay({ videoRef, videoId, nativeWidth, native
 
       let renderW: number, renderH: number, offsetX: number, offsetY: number;
       if (elemAspect > videoAspect) {
-        // Element wider than video — pillarboxed (black bars on sides)
         renderH = elemH;
         renderW = renderH * videoAspect;
         offsetX = (elemW - renderW) / 2;
         offsetY = 0;
       } else {
-        // Element taller than video — letterboxed (black bars top/bottom or controls)
         renderW = elemW;
         renderH = renderW / videoAspect;
         offsetX = 0;
         offsetY = (elemH - renderH) / 2;
       }
 
-      // Scale factors from 1920x1080 base to actual rendered video area
       const scaleX = renderW / BASE_W;
       const scaleY = renderH / BASE_H;
 
-      // Find closest frame for OCR labels
       const currentTimeMs = video.currentTime * 1000;
       const frames = framesRef.current;
       const closestFrame = frames ? findClosestFrame(frames, currentTimeMs) : null;
 
+      // --- Draw OCR crop regions ---
       for (const region of regionsRef.current) {
         const rx = offsetX + region.x * scaleX;
         const ry = offsetY + region.y * scaleY;
         const rw = region.w * scaleX;
         const rh = region.h * scaleY;
 
-        // Semi-transparent fill
         ctx.fillStyle = region.color + "18";
         ctx.fillRect(rx, ry, rw, rh);
 
-        // Colored border
         ctx.strokeStyle = region.color;
         ctx.lineWidth = 1.5;
         ctx.strokeRect(rx, ry, rw, rh);
 
-        // Label pill above box
         const ocrValue = closestFrame
           ? formatOcrValue(region.field, closestFrame.ocr_data)
           : "—";
@@ -247,28 +364,45 @@ export default function AIVisionOverlay({ videoRef, videoId, nativeWidth, native
         const pillX = rx;
         const pillY = ry - pillH - 2;
 
-        // Pill background
         ctx.fillStyle = region.color + "cc";
         ctx.beginPath();
         ctx.roundRect(pillX, pillY, pillW, pillH, 3);
         ctx.fill();
 
-        // Pill text
         ctx.fillStyle = "#fff";
         ctx.fillText(labelText, pillX + 4, pillY + fontSize);
       }
 
-      // --- Draw YOLO detection boxes ---
-      const detections = closestFrame?.detections;
-      if (detections && Array.isArray(detections) && detections.length > 0) {
-        // Scale from native video resolution to rendered area
+      // --- Draw interpolated YOLO detection boxes ---
+      if (frames && frames.length > 0) {
         const nativeW = video.videoWidth || BASE_W;
         const nativeH = video.videoHeight || BASE_H;
         const detScaleX = renderW / nativeW;
         const detScaleY = renderH / nativeH;
 
-        for (const det of detections) {
-          if (!det.bbox || det.bbox.length < 4) continue;
+        // Find surrounding frames for interpolation
+        const prevIdx = findFrameBefore(frames, currentTimeMs);
+        const prevFrame = prevIdx >= 0 ? frames[prevIdx] : null;
+        const nextFrame = prevIdx + 1 < frames.length ? frames[prevIdx + 1] : null;
+
+        // Compute interpolation factor (0 = at prev frame, 1 = at next frame)
+        let t = 0;
+        if (prevFrame && nextFrame) {
+          const span = nextFrame.timestamp_ms - prevFrame.timestamp_ms;
+          if (span > 0) {
+            t = Math.max(0, Math.min(1, (currentTimeMs - prevFrame.timestamp_ms) / span));
+          }
+        } else if (!prevFrame && nextFrame) {
+          t = 1; // before first frame — show next
+        }
+
+        const interpDets = interpolateDetections(prevFrame, nextFrame, t);
+        const filters = filtersRef?.current;
+
+        for (const det of interpDets) {
+          if (!det.bbox || det.bbox.length < 4 || det.opacity <= 0) continue;
+          if (filters && !shouldShowDetection(det.class_name, filters)) continue;
+
           const [bx1, by1, bx2, by2] = det.bbox;
           const dx = offsetX + bx1 * detScaleX;
           const dy = offsetY + by1 * detScaleY;
@@ -276,8 +410,10 @@ export default function AIVisionOverlay({ videoRef, videoId, nativeWidth, native
           const dh = (by2 - by1) * detScaleY;
 
           const color = getDetectionColor(det.class_name, det.track_id);
+          const alpha = det.opacity;
 
           // Dashed bounding box
+          ctx.globalAlpha = alpha;
           ctx.strokeStyle = color;
           ctx.lineWidth = 2;
           ctx.setLineDash([6, 3]);
@@ -288,7 +424,7 @@ export default function AIVisionOverlay({ videoRef, videoId, nativeWidth, native
           ctx.fillStyle = color + "15";
           ctx.fillRect(dx, dy, dw, dh);
 
-          // Label pill — human-readable labels
+          // Label pill
           const detLabel = getDisplayLabel(det);
           const detFontSize = Math.max(9, Math.round(11 * detScaleX));
           ctx.font = `600 ${detFontSize}px Inter, system-ui, sans-serif`;
@@ -305,6 +441,7 @@ export default function AIVisionOverlay({ videoRef, videoId, nativeWidth, native
 
           ctx.fillStyle = "#fff";
           ctx.fillText(detLabel, detPillX + 4, detPillY + detFontSize);
+          ctx.globalAlpha = 1;
         }
       }
 

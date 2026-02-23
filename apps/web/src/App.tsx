@@ -1,12 +1,14 @@
 import { useState, useRef, useCallback, useEffect } from "react";
+import { Routes, Route, NavLink } from "react-router-dom";
 import Markdown from "react-markdown";
 import VideoUploader from "./components/VideoUploader";
 import ExtractionStatus from "./components/ExtractionStatus";
 import FrameTimeline from "./components/FrameTimeline";
 import SegmentList from "./components/SegmentList";
 import ReportView from "./components/ReportView";
-import AIVisionOverlay, { useAIVision } from "./components/AIVisionOverlay";
+import AIVisionOverlay, { useAIVision, type DetectionFilters } from "./components/AIVisionOverlay";
 import VideoControls from "./components/VideoControls";
+import AdminPage from "./components/AdminPage";
 
 type Mode = "pipeline" | "legacy";
 type Status =
@@ -24,7 +26,14 @@ interface ApiError {
   message: string;
 }
 
-export default function App() {
+const FILTER_CHIP_META: { key: keyof DetectionFilters; label: string; color: string }[] = [
+  { key: "player",  label: "Player",  color: "#22d3ee" },
+  { key: "allies",  label: "Allies",  color: "#3b82f6" },
+  { key: "enemies", label: "Enemies", color: "#ef4444" },
+  { key: "minions", label: "Minions", color: "#f59e0b" },
+];
+
+function EditorPage() {
   const [mode, setMode] = useState<Mode>("pipeline");
   const [status, setStatus] = useState<Status>("idle");
   const [error, setError] = useState<ApiError | null>(null);
@@ -32,6 +41,18 @@ export default function App() {
   const [videoMeta, setVideoMeta] = useState<{ width: number; height: number } | null>(null);
   const videoElRef = useRef<HTMLVideoElement>(null);
   const aiVision = useAIVision(videoId ?? "");
+
+  // Filter state (ref for rAF loop, state for chip UI re-renders)
+  const filtersRef = useRef<DetectionFilters>({ player: true, allies: true, enemies: true, minions: true });
+  const [filterState, setFilterState] = useState<DetectionFilters>({ player: true, allies: true, enemies: true, minions: true });
+
+  const toggleFilter = useCallback((key: keyof DetectionFilters) => {
+    setFilterState((prev) => {
+      const next = { ...prev, [key]: !prev[key] };
+      filtersRef.current = next;
+      return next;
+    });
+  }, []);
 
   // Legacy mode state
   const [legacyAnalysis, setLegacyAnalysis] = useState("");
@@ -163,24 +184,21 @@ export default function App() {
     : null;
 
   return (
-    <div className="app">
-      <header className="app-header">
-        <h1>League AI Video Editor</h1>
-        <div className="mode-toggle">
-          <button
-            className={`mode-btn ${mode === "pipeline" ? "active" : ""}`}
-            onClick={() => { reset(); setMode("pipeline"); }}
-          >
-            Extraction Pipeline
-          </button>
-          <button
-            className={`mode-btn ${mode === "legacy" ? "active" : ""}`}
-            onClick={() => { reset(); setMode("legacy"); }}
-          >
-            Quick Analysis
-          </button>
-        </div>
-      </header>
+    <>
+      <div className="mode-toggle">
+        <button
+          className={`mode-btn ${mode === "pipeline" ? "active" : ""}`}
+          onClick={() => { reset(); setMode("pipeline"); }}
+        >
+          Extraction Pipeline
+        </button>
+        <button
+          className={`mode-btn ${mode === "legacy" ? "active" : ""}`}
+          onClick={() => { reset(); setMode("legacy"); }}
+        >
+          Quick Analysis
+        </button>
+      </div>
 
       <p className="subtitle">
         {mode === "pipeline"
@@ -236,6 +254,7 @@ export default function App() {
                 nativeHeight={videoMeta?.height ?? 1080}
                 enabled={aiVision.enabled}
                 frameVersion={aiVision.frameVersion}
+                filtersRef={filtersRef}
               />
             )}
           </div>
@@ -243,13 +262,31 @@ export default function App() {
             videoRef={videoElRef}
             extraControls={
               mode === "pipeline" ? (
-                <button
-                  className={`ai-vision-toggle${aiVision.enabled ? " active" : ""}`}
-                  onClick={aiVision.toggle}
-                  disabled={aiVision.loading}
-                >
-                  {aiVision.loading ? "Loading..." : aiVision.enabled ? "Hide AI Vision" : "Show AI Vision"}
-                </button>
+                <>
+                  {aiVision.enabled && (
+                    <div className="filter-chips">
+                      {FILTER_CHIP_META.map(({ key, label, color }) => (
+                        <button
+                          key={key}
+                          className={`filter-chip${filterState[key] ? " active" : ""}`}
+                          style={{
+                            "--chip-color": color,
+                          } as React.CSSProperties}
+                          onClick={() => toggleFilter(key)}
+                        >
+                          {label}
+                        </button>
+                      ))}
+                    </div>
+                  )}
+                  <button
+                    className={`ai-vision-toggle${aiVision.enabled ? " active" : ""}`}
+                    onClick={aiVision.toggle}
+                    disabled={aiVision.loading}
+                  >
+                    {aiVision.loading ? "Loading..." : aiVision.enabled ? "Hide AI Vision" : "Show AI Vision"}
+                  </button>
+                </>
               ) : undefined
             }
           />
@@ -307,6 +344,29 @@ export default function App() {
           Upload New Video
         </button>
       )}
+    </>
+  );
+}
+
+export default function App() {
+  return (
+    <div className="app">
+      <header className="app-header">
+        <h1>League AI Video Editor</h1>
+        <nav className="nav-links">
+          <NavLink to="/" end className={({ isActive }) => `nav-link${isActive ? " active" : ""}`}>
+            Editor
+          </NavLink>
+          <NavLink to="/admin" className={({ isActive }) => `nav-link${isActive ? " active" : ""}`}>
+            Admin Tools
+          </NavLink>
+        </nav>
+      </header>
+
+      <Routes>
+        <Route path="/" element={<EditorPage />} />
+        <Route path="/admin" element={<AdminPage />} />
+      </Routes>
     </div>
   );
 }

@@ -19,7 +19,8 @@ A coaching platform where:
 | **Phase 1** | Core extraction pipeline + evidence-grounded reports | Weeks 1-2 | **Complete** |
 | **Phase 1.5** | YOLO object detection + OCR calibration | Week 3 | **Complete** |
 | **Phase 2A** | Champion identification (portrait matching + user input) | Week 3 | **Complete** |
-| **Phase 2** | Lightweight learning (retrieval + GRU classifier) | Weeks 3-4 | Not Started |
+| **Phase 2B** | Health bar color tuning + admin debug tools + filter toggles | Week 4 | **Complete** |
+| **Phase 2** | Lightweight learning (retrieval + GRU classifier) | Weeks 4-5 | Not Started |
 | **Phase 3** | Pro VOD data pipeline + model training | Weeks 5-8 | Not Started |
 | **Phase 4** | Scale, auth, production deployment | Weeks 9-12 | Not Started |
 
@@ -162,7 +163,50 @@ Image matching (template, histogram, ORB features) fundamentally cannot reliably
 
 ---
 
-## Phase 2: Lightweight Learning (Weeks 3-4)
+## Phase 2B: Health Bar Detection Tuning & Admin Tools (Week 4) — COMPLETE
+
+**Goal:** Fix health bar color correction accuracy, build debug tooling for rapid iteration, add UI polish.
+
+*Full writeup: [docs/phase-2b-health-bar-detection-and-admin-tools.md](./phase-2b-health-bar-detection-and-admin-tools.md)*
+
+### Health Bar Crop Region Fix
+- [x] Discovered crop was scanning **above** YOLO bbox (landing on name text, not health bar)
+- [x] Fixed to scan **inside** top 0-10% of bbox (where health bar actually sits)
+- [x] Iterated through values (5-25% → 0-22% → 0-10%) using admin tool to avoid mana bar contamination
+- [x] Fixed in 3 files: `postprocess.py`, `debug.py` (crop + fractions + context visualization)
+- [x] `correct_detections()` now stores `original_class` for debug visibility
+
+### Admin Debug Tool (`/admin`)
+- [x] `GET /api/v1/videos/{id}/debug/health-bar-colors` — runs YOLO + color correction live on any frame
+- [x] Returns per-detection: class, confidence, bbox, color fractions, health bar crop (base64), context crop (base64)
+- [x] Context crop (400x140) shows gameplay with yellow bbox + green health bar scan region drawn
+- [x] Frontend: video selector, frame stepper (prev/next + slider + number input), detection cards
+- [x] Shows "was X" badge when a detection was reclassified by color correction
+- [x] Built with Tailwind CSS (v4)
+- [x] React Router integration: "Editor" (`/`) and "Admin Tools" (`/admin`) nav tabs
+
+### Detection Filter Toggles
+- [x] 4 toggle chips (Player / Allies / Enemies / Minions) on AI Vision overlay
+- [x] Ref-based filtering to avoid re-renders in rAF draw loop
+- [x] Chips appear to the left of "Hide AI Vision" button
+- [x] Category-colored with CSS custom properties
+
+### Live Extraction Progress
+- [x] In-memory `live_progress` dict updated from extraction thread
+- [x] Status endpoint returns `extracted_frames`, `total_frames`, `phase`
+- [x] Frontend shows "Extracting 30/140 frames..." with smooth progress bar
+- [x] Two-phase progress: extraction (0-80%) + DB insert (80-100%)
+- [x] Polling interval reduced from 3s to 1.5s
+
+### Key Lessons
+- Health bar scan region placement matters more than HSV ranges — wrong crop = wrong color
+- Mana bars are blue and will cause false ally classifications if the scan region is too tall
+- Build debug visualization tools **before** tuning ML post-processing
+- YOLO bounding boxes in our dataset include name text + health bar + mana bar + body
+
+---
+
+## Phase 2: Lightweight Learning (Weeks 4-5)
 
 **Goal:** Move beyond rule-based analysis. Use retrieval and a small classifier to provide smarter coaching.
 

@@ -73,12 +73,13 @@ app.add_middleware(
 
 # ── Mount new routers ─────────────────────────────────────────────────────────
 # These require Postgres; they gracefully error if DB is not available.
-from routers import videos, extraction, reports, labels
+from routers import videos, extraction, reports, labels, debug
 
 app.include_router(videos.router, prefix="/api/v1")
 app.include_router(extraction.router, prefix="/api/v1")
 app.include_router(reports.router, prefix="/api/v1")
 app.include_router(labels.router, prefix="/api/v1")
+app.include_router(debug.router, prefix="/api/v1")
 
 
 # ══════════════════════════════════════════════════════════════════════════════

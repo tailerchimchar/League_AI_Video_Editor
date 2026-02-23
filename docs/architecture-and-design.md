@@ -553,16 +553,33 @@ Video File (MP4/WebM)
 - [x] Calibration debug tool (`scripts/calibrate_scoreboard.py`)
 - [x] Health bar color debug tool (`scripts/debug_health_bar_colors.py`)
 
+### Completed (Phase 2B — Health Bar Tuning + Admin Debug Tools)
+
+- [x] **Health bar crop region fix** — was scanning above bbox (name text), now scans inside top 0-10% (actual health bar)
+- [x] Iterated through 5-25% → 0-22% → 0-10% to avoid mana bar contamination
+- [x] `correct_detections()` now stores `original_class` for debug visibility
+- [x] **Admin Debug Tool** (`/admin`) — browser-based detection + color analysis on any video frame
+  - Video selector, frame stepper (prev/next/slider/input)
+  - Context crop (400x140) with yellow bbox + green health bar scan region
+  - Color fraction bars (G/B/R) + "was X" reclassification badges
+  - Built with Tailwind CSS v4, React Router navigation
+- [x] **Detection filter toggles** — Player/Allies/Enemies/Minions chips on AI Vision overlay
+- [x] **Live extraction progress** — "Extracting 30/140 frames..." with in-memory progress tracking
+- [x] Polling interval reduced 3s → 1.5s, two-phase progress bar (extraction 0-80%, insert 80-100%)
+
+*Full writeup: [docs/phase-2b-health-bar-detection-and-admin-tools.md](./phase-2b-health-bar-detection-and-admin-tools.md)*
+
 ### Not Yet Built
 
-- [ ] OCR calibration with more League screenshots (different resolutions)
+- [ ] Retrain YOLO with more data (YOLOv8s on GPU, 1000+ images)
+- [ ] Resolution-adaptive crop regions (1440p, 720p)
+- [ ] OCR calibration with more League screenshots
 - [ ] OpenCLIP embedding pipeline
 - [ ] GRU segment classifier
 - [ ] Pro VOD ingestion pipeline
 - [ ] Supabase migration (from local Docker Postgres)
 - [ ] Authentication / multi-user
 - [ ] Horizontal scaling
-- [ ] Frontend polish (debug overlays, frame scrubbing, label UI)
 
 ---
 

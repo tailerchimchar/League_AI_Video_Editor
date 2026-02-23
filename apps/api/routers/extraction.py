@@ -13,7 +13,7 @@ from db.queries import (
     get_frames_for_video,
     get_segments_for_video,
 )
-from extractor.pipeline import run_extraction_pipeline
+from extractor.pipeline import run_extraction_pipeline, live_progress
 from schemas.extraction import ExtractionConfig
 
 router = APIRouter(tags=["extraction"])
@@ -67,8 +67,9 @@ async def extraction_status(video_id: str):
     if not job:
         return _error(404, "NOT_FOUND", "No extraction job found for this video.")
 
-    return JSONResponse(content={
-        "job_id": str(job["id"]),
+    job_id = str(job["id"])
+    resp = {
+        "job_id": job_id,
         "video_id": str(job["video_id"]),
         "status": job["status"],
         "progress": job["progress"] or 0.0,
@@ -76,7 +77,16 @@ async def extraction_status(video_id: str):
         "error_message": job["error_message"],
         "started_at": job["started_at"].isoformat() if job["started_at"] else None,
         "completed_at": job["completed_at"].isoformat() if job["completed_at"] else None,
-    })
+    }
+
+    # Supplement with live extraction progress (from the background thread)
+    lp = live_progress.get(job_id)
+    if lp:
+        resp["extracted_frames"] = lp["extracted"]
+        resp["total_frames"] = lp["total"]
+        resp["phase"] = lp["phase"]
+
+    return JSONResponse(content=resp)
 
 
 @router.get("/videos/{video_id}/frames")
