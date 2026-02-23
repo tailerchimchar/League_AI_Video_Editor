@@ -28,14 +28,38 @@ async def start_extraction(
     video_id: str,
     config: ExtractionConfig | None = None,
     background_tasks: BackgroundTasks = BackgroundTasks(),
+    force: bool = False,
 ):
-    """Start an extraction job for a video."""
+    """Start an extraction job for a video.
+
+    Skips re-extraction if a completed job already exists (unless force=True).
+    """
     video = await get_video(video_id)
     if not video:
         return _error(404, "NOT_FOUND", "Video not found.")
 
     if config is None:
         config = ExtractionConfig()
+
+    # Check for existing completed or running job
+    if not force:
+        existing = await get_latest_job_for_video(video_id)
+        if existing and existing["status"] == "completed":
+            return JSONResponse(content={
+                "job_id": str(existing["id"]),
+                "video_id": video_id,
+                "status": "completed",
+                "progress": 1.0,
+                "cached": True,
+            })
+        if existing and existing["status"] in ("pending", "running"):
+            return JSONResponse(content={
+                "job_id": str(existing["id"]),
+                "video_id": video_id,
+                "status": existing["status"],
+                "progress": existing["progress"] or 0.0,
+                "cached": True,
+            })
 
     # Create analysis job
     job = await insert_job(

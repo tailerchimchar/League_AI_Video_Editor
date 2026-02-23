@@ -3,18 +3,21 @@ import type { ExtractionStatus as ExtStatus } from "../api/client";
 
 interface Props {
   videoId: string;
+  force?: boolean;
   onComplete: () => void;
   onError: (message: string) => void;
 }
 
 export default function ExtractionStatus({
   videoId,
+  force = false,
   onComplete,
   onError,
 }: Props) {
   const [status, setStatus] = useState<ExtStatus | null>(null);
   const [extracting, setExtracting] = useState(false);
   const [playedChampion, setPlayedChampion] = useState("");
+  const [checked, setChecked] = useState(false);
   const intervalRef = useRef<ReturnType<typeof setInterval> | null>(null);
 
   const stopPolling = useCallback(() => {
@@ -28,13 +31,62 @@ export default function ExtractionStatus({
     return () => stopPolling();
   }, [stopPolling]);
 
-  const startExtraction = useCallback(async () => {
+  // Check for existing completed extraction on mount (skip if force re-extract)
+  useEffect(() => {
+    if (force) {
+      setChecked(true);
+      return;
+    }
+    let cancelled = false;
+    (async () => {
+      try {
+        const res = await fetch(`/api/v1/videos/${videoId}/extract/status`);
+        if (!res.ok) {
+          setChecked(true);
+          return;
+        }
+        const data: ExtStatus = await res.json();
+        if (cancelled) return;
+        if (data.status === "completed") {
+          setStatus(data);
+          onComplete();
+        } else if (data.status === "running" || data.status === "pending") {
+          // Extraction in progress — start polling
+          setStatus(data);
+          setExtracting(true);
+          intervalRef.current = setInterval(async () => {
+            try {
+              const pollRes = await fetch(`/api/v1/videos/${videoId}/extract/status`);
+              if (!pollRes.ok) return;
+              const pollData: ExtStatus = await pollRes.json();
+              setStatus(pollData);
+              if (pollData.status === "completed") {
+                stopPolling();
+                setExtracting(false);
+                onComplete();
+              } else if (pollData.status === "failed") {
+                stopPolling();
+                setExtracting(false);
+                onError(pollData.error_message || "Extraction failed");
+              }
+            } catch { /* ignore */ }
+          }, 1500);
+        }
+      } catch { /* no existing job */ }
+      if (!cancelled) setChecked(true);
+    })();
+    return () => { cancelled = true; };
+  }, [videoId, onComplete, onError, stopPolling]);
+
+  const startExtraction = useCallback(async (force = false) => {
     setExtracting(true);
+    setStatus(null);
     try {
       const config = playedChampion.trim()
         ? { played_champion: playedChampion.trim() }
         : undefined;
-      const res = await fetch(`/api/v1/videos/${videoId}/extract`, {
+      const url = `/api/v1/videos/${videoId}/extract${force ? "?force=true" : ""}`;
+      const res = await fetch(url, {
         method: "POST",
         ...(config
           ? {
@@ -50,6 +102,15 @@ export default function ExtractionStatus({
         return;
       }
 
+      const data = await res.json();
+      // If backend returned cached completed result, skip straight to done
+      if (data.cached && data.status === "completed") {
+        setStatus(data as ExtStatus);
+        setExtracting(false);
+        onComplete();
+        return;
+      }
+
       // Start polling
       intervalRef.current = setInterval(async () => {
         try {
@@ -57,17 +118,17 @@ export default function ExtractionStatus({
             `/api/v1/videos/${videoId}/extract/status`
           );
           if (!pollRes.ok) return;
-          const data: ExtStatus = await pollRes.json();
-          setStatus(data);
+          const pollData: ExtStatus = await pollRes.json();
+          setStatus(pollData);
 
-          if (data.status === "completed") {
+          if (pollData.status === "completed") {
             stopPolling();
             setExtracting(false);
             onComplete();
-          } else if (data.status === "failed") {
+          } else if (pollData.status === "failed") {
             stopPolling();
             setExtracting(false);
-            onError(data.error_message || "Extraction failed");
+            onError(pollData.error_message || "Extraction failed");
           }
         } catch {
           // Ignore transient poll errors
@@ -114,7 +175,7 @@ export default function ExtractionStatus({
 
   return (
     <div className="extraction-panel">
-      {!extracting && !status && (
+      {!extracting && !status && checked && (
         <div className="extraction-form">
           <div className="champion-input-row">
             <input
@@ -125,8 +186,8 @@ export default function ExtractionStatus({
               onChange={(e) => setPlayedChampion(e.target.value)}
             />
           </div>
-          <button className="extract-btn" onClick={startExtraction}>
-            Extract Game Data
+          <button className="extract-btn" onClick={() => startExtraction(force)}>
+            {force ? "Re-extract Game Data" : "Extract Game Data"}
           </button>
         </div>
       )}

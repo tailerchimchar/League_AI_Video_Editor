@@ -38,6 +38,7 @@ function EditorPage() {
   const [status, setStatus] = useState<Status>("idle");
   const [error, setError] = useState<ApiError | null>(null);
   const [videoId, setVideoId] = useState<string | null>(null);
+  const [forceExtract, setForceExtract] = useState(false);
   const [videoMeta, setVideoMeta] = useState<{ width: number; height: number } | null>(null);
   const videoElRef = useRef<HTMLVideoElement>(null);
   const aiVision = useAIVision(videoId ?? "");
@@ -299,13 +300,22 @@ function EditorPage() {
           {(status === "uploaded" || status === "extracting") && (
             <ExtractionStatus
               videoId={videoId}
-              onComplete={handleExtractionComplete}
+              force={forceExtract}
+              onComplete={() => { setForceExtract(false); handleExtractionComplete(); }}
               onError={handleExtractionError}
             />
           )}
 
           {status === "extracted" && (
             <>
+              <div className="reextract-row">
+                <button
+                  className="reextract-btn"
+                  onClick={() => { setForceExtract(true); setStatus("uploaded"); }}
+                >
+                  Re-extract
+                </button>
+              </div>
               <FrameTimeline videoId={videoId} />
               <SegmentList videoId={videoId} />
               <ReportView videoId={videoId} />

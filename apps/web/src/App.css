@@ -315,6 +315,28 @@ h1 {
   background: #535bf2;
 }
 
+.reextract-row {
+  display: flex;
+  justify-content: flex-end;
+  margin-bottom: 0.5rem;
+}
+
+.reextract-btn {
+  padding: 0.35rem 0.9rem;
+  border: 1px solid #555;
+  border-radius: 6px;
+  background: transparent;
+  color: #aaa;
+  font-size: 0.8rem;
+  cursor: pointer;
+  transition: background 0.15s, color 0.15s;
+}
+
+.reextract-btn:hover {
+  background: #333;
+  color: #fff;
+}
+
 .report-btn:disabled {
   opacity: 0.6;
   cursor: not-allowed;

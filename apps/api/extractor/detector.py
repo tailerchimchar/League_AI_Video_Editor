@@ -7,9 +7,28 @@ Uses CUDA GPU acceleration when available, falls back to CPU.
 from __future__ import annotations
 
 import logging
+import os
+import sys
 from pathlib import Path
 
 import numpy as np
+
+
+def _add_nvidia_dll_dirs() -> None:
+    """Add pip-installed nvidia package DLL dirs so onnxruntime can find CUDA."""
+    if sys.platform != "win32":
+        return
+    site_pkgs = Path(__file__).resolve().parent.parent / ".venv" / "Lib" / "site-packages" / "nvidia"
+    if not site_pkgs.is_dir():
+        return
+    for sub in site_pkgs.iterdir():
+        bin_dir = sub / "bin"
+        if bin_dir.is_dir():
+            os.add_dll_directory(str(bin_dir))
+            os.environ["PATH"] = str(bin_dir) + os.pathsep + os.environ.get("PATH", "")
+
+
+_add_nvidia_dll_dirs()
 
 logger = logging.getLogger(__name__)
 
@@ -104,14 +123,21 @@ class YoloDetector:
         if self.model_path.exists():
             try:
                 import onnxruntime as ort
+
+                # Session-level optimizations
+                sess_opts = ort.SessionOptions()
+                sess_opts.graph_optimization_level = ort.GraphOptimizationLevel.ORT_ENABLE_ALL
+                sess_opts.enable_mem_pattern = True
+
                 # Prefer GPU; onnxruntime-gpu provides CUDAExecutionProvider.
-                # Falls back to CPU automatically if CUDA is unavailable.
                 providers = ["CUDAExecutionProvider", "CPUExecutionProvider"]
-                self.session = ort.InferenceSession(str(self.model_path), providers=providers)
+                self.session = ort.InferenceSession(
+                    str(self.model_path), sess_options=sess_opts, providers=providers,
+                )
                 active = self.session.get_providers()
                 logger.info("ONNX Runtime providers: %s", active)
                 self.input_name = self.session.get_inputs()[0].name
-                self.input_shape = self.session.get_inputs()[0].shape  # [1, 3, H, W]
+                self.input_shape = self.session.get_inputs()[0].shape  # [batch, 3, H, W]
                 self._available = True
                 logger.info(
                     "YOLO detector loaded: %s (input %s)",
@@ -126,8 +152,8 @@ class YoloDetector:
     def available(self) -> bool:
         return self._available
 
-    def detect(self, frame: np.ndarray, conf_thresh: float = 0.40) -> list[dict]:
-        """Run detection on a frame. Returns list of detection dicts."""
+    def detect(self, frame: np.ndarray, conf_thresh: float = 0.32) -> list[dict]:
+        """Run detection on a single frame. Returns list of detection dicts."""
         if not self._available:
             return []
 
@@ -135,16 +161,31 @@ class YoloDetector:
         outputs = self.session.run(None, {self.input_name: blob})
         return self._postprocess(outputs, frame.shape, conf_thresh)
 
-    def _preprocess(self, frame: np.ndarray) -> np.ndarray:
-        """Resize to model input size, normalize to [0,1], NCHW format."""
+    def detect_batch(
+        self, frames: list[np.ndarray], conf_thresh: float = 0.40,
+    ) -> list[list[dict]]:
+        """Run detection on multiple frames. Processes sequentially on GPU.
+
+        Returns a list of detection lists, one per input frame.
+        """
+        if not self._available or not frames:
+            return [[] for _ in frames]
+
+        return [self.detect(f, conf_thresh) for f in frames]
+
+    def _preprocess_single(self, frame: np.ndarray) -> np.ndarray:
+        """Preprocess one frame: resize, normalize, NCHW, add batch dim."""
         import cv2
 
         h, w = self.input_shape[2], self.input_shape[3]
         resized = cv2.resize(frame, (w, h))
         blob = resized.astype(np.float32) / 255.0
         blob = blob.transpose(2, 0, 1)  # HWC -> CHW
-        blob = np.expand_dims(blob, 0)   # add batch dim
-        return blob
+        return np.expand_dims(blob, 0)   # (1, 3, H, W)
+
+    def _preprocess(self, frame: np.ndarray) -> np.ndarray:
+        """Resize to model input size, normalize to [0,1], NCHW format."""
+        return self._preprocess_single(frame)
 
     def _postprocess(
         self,

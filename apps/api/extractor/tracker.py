@@ -16,7 +16,7 @@ logger = logging.getLogger(__name__)
 
 # --- Tracker hyperparameters ---
 IOU_THRESHOLD = 0.3      # Minimum IoU to consider a match
-MAX_AGE = 3              # Frames without a match before killing a track
+MAX_AGE = 6             # Frames without a match before killing a track
 HISTORY_LEN = 10         # Number of frames for class majority vote
 BBOX_ALPHA = 0.4         # EMA smoothing factor (higher = more responsive)
 

@@ -79,10 +79,11 @@ def _estimate_total_frames(video_path: str, sample_fps: float, max_frames: int =
     return min(total_frames // step, max_frames)
 
 
-def _process_single_frame(
-    frame_idx: int,
-    ts_ms: int,
-    frame_np,
+DETECTION_BATCH_SIZE = 8  # Number of frames to batch for GPU detection
+
+
+def _process_frame_batch(
+    frames: list[tuple],
     video_id: str,
     job_id: str,
     width: int,
@@ -94,59 +95,68 @@ def _process_single_frame(
     prev_ocr: dict | None,
     prev_ts: int,
     game_champions: dict | None = None,
-) -> dict:
-    """Process a single frame: crop, OCR, detect, track, compute features."""
-    crops = crop_hud_regions(frame_np, width, height)
-
-    ocr_data: dict = {}
-    if enable_ocr and crops:
-        ocr_data = run_ocr_on_crops(crops)
-
-    # Attach game roster to every frame's ocr_data so it flows to DB/frontend
-    if game_champions:
-        ocr_data["game_champions"] = game_champions
-
-    detections: list[dict] = []
+) -> list[dict]:
+    """Process a batch of frames: batch YOLO detection on GPU, then sequential OCR/tracking."""
+    # Step 1: Batch YOLO detection (single GPU call for all frames)
     if detector and detector.available:
-        detections = detector.detect(frame_np)
-        # Health bar color correction (3-color: green/blue/red)
-        detections = correct_detections(frame_np, detections)
+        frame_arrays = [f[2] for f in frames]
+        batch_detections = detector.detect_batch(frame_arrays)
+    else:
+        batch_detections = [[] for _ in frames]
 
-    # Enrich played_champion detections with champion name BEFORE tracking,
-    # so the tracker can preserve champion identity across frames.
-    if game_champions and detections:
-        player_info = game_champions.get("player")
-        if player_info:
-            for det in detections:
-                if det["class_name"] == "played_champion":
-                    if player_info.get("confidence", 0) >= 1.0:
+    # Step 2: Process each frame sequentially (OCR, color correction, tracking)
+    payloads = []
+    for i, (frame_idx, ts_ms, frame_np) in enumerate(frames):
+        crops = crop_hud_regions(frame_np, width, height)
+
+        ocr_data: dict = {}
+        if enable_ocr and crops:
+            ocr_data = run_ocr_on_crops(crops)
+
+        if game_champions:
+            ocr_data["game_champions"] = game_champions
+
+        detections = batch_detections[i]
+        if detections:
+            detections = correct_detections(frame_np, detections)
+
+        # Enrich played_champion detections with champion name BEFORE tracking
+        if game_champions and detections:
+            player_info = game_champions.get("player")
+            if player_info:
+                for det in detections:
+                    if det["class_name"] == "played_champion":
                         det["champion"] = player_info["name"]
-                        det["champion_confidence"] = 1.0
-                    else:
-                        det["champion"] = player_info["name"]
-                        det["champion_confidence"] = player_info.get("confidence", 0)
+                        det["champion_confidence"] = (
+                            1.0 if player_info.get("confidence", 0) >= 1.0
+                            else player_info.get("confidence", 0)
+                        )
 
-    # Object tracking: smooth bboxes and stabilize class labels
-    if tracker is not None and detections:
-        detections = tracker.update(detections)
+        if tracker is not None and detections:
+            detections = tracker.update(detections)
 
-    dt_ms = ts_ms - prev_ts if prev_ocr is not None else 0
-    derived = compute_derived_features(ocr_data, prev_ocr, dt_ms)
+        dt_ms = ts_ms - prev_ts if prev_ocr is not None else 0
+        derived = compute_derived_features(ocr_data, prev_ocr, dt_ms)
 
-    crop_paths: dict = {}
-    if crop_output_dir:
-        crop_paths = save_crops_to_disk(crops, crop_output_dir, frame_idx)
+        crop_paths: dict = {}
+        if crop_output_dir:
+            crop_paths = save_crops_to_disk(crops, crop_output_dir, frame_idx)
 
-    return {
-        "job_id": job_id,
-        "video_id": video_id,
-        "frame_index": frame_idx,
-        "timestamp_ms": ts_ms,
-        "ocr_data": ocr_data,
-        "detections": detections,
-        "derived_features": derived,
-        "crop_paths": crop_paths,
-    }
+        payload = {
+            "job_id": job_id,
+            "video_id": video_id,
+            "frame_index": frame_idx,
+            "timestamp_ms": ts_ms,
+            "ocr_data": ocr_data,
+            "detections": detections,
+            "derived_features": derived,
+            "crop_paths": crop_paths,
+        }
+        payloads.append(payload)
+        prev_ocr = ocr_data
+        prev_ts = ts_ms
+
+    return payloads
 
 
 async def run_extraction_pipeline(
@@ -207,6 +217,8 @@ async def run_extraction_pipeline(
             game_champions: dict | None = None
             tracker = SimpleTracker()
             count = 0
+            frame_buffer: list[tuple] = []
+
             for frame_idx, ts_ms, frame_np in sample_frames(video_path, fps=sample_fps):
                 # On first frame, identify champions
                 if count == 0:
@@ -239,22 +251,34 @@ async def run_extraction_pipeline(
                         except Exception:
                             logger.exception("Champion identification failed on first frame")
 
-                payload = _process_single_frame(
-                    frame_idx, ts_ms, frame_np,
-                    video_id, job_id, width, height,
-                    enable_ocr, detector, tracker,
-                    crop_output_dir,
-                    prev_ocr, prev_ts,
-                    game_champions=game_champions,
-                )
-                all_payloads.append(payload)
-                prev_ocr = payload["ocr_data"]
-                prev_ts = ts_ms
+                frame_buffer.append((frame_idx, ts_ms, frame_np))
                 count += 1
-                # Update live progress for the status endpoint (thread-safe: simple dict write)
+
+                # Process batch when full
+                if len(frame_buffer) >= DETECTION_BATCH_SIZE:
+                    payloads = _process_frame_batch(
+                        frame_buffer, video_id, job_id, width, height,
+                        enable_ocr, detector, tracker, crop_output_dir,
+                        prev_ocr, prev_ts, game_champions=game_champions,
+                    )
+                    all_payloads.extend(payloads)
+                    prev_ocr = payloads[-1]["ocr_data"]
+                    prev_ts = payloads[-1]["timestamp_ms"]
+                    frame_buffer = []
+                    live_progress[job_id] = {"extracted": count, "total": estimated_total, "phase": "extracting"}
+                    if count % 10 == 0:
+                        logger.info("Extracted %d/%d frames...", count, estimated_total)
+
+            # Flush remaining frames
+            if frame_buffer:
+                payloads = _process_frame_batch(
+                    frame_buffer, video_id, job_id, width, height,
+                    enable_ocr, detector, tracker, crop_output_dir,
+                    prev_ocr, prev_ts, game_champions=game_champions,
+                )
+                all_payloads.extend(payloads)
                 live_progress[job_id] = {"extracted": count, "total": estimated_total, "phase": "extracting"}
-                if count % 10 == 0:
-                    logger.info("Extracted %d/%d frames...", count, estimated_total)
+
             return all_payloads
 
         all_payloads = await asyncio.to_thread(_extract_all)
