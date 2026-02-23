@@ -4,3 +4,16 @@ dist/
 __pycache__/
 *.pyc
 bun.lockb
+.env
+
+# Data artifacts (videos, frames, crops, models, datasets)
+data/videos/
+data/frames/
+data/crops/
+data/debug/
+data/models/
+data/datasets/
+data/champions/
+
+# YOLO training runs
+runs/

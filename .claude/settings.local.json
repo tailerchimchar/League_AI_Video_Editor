@@ -1,0 +1,10 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(\"/c/Program Files/GitHub CLI/gh.exe\" auth status:*)",
+      "Bash(\"/c/Program Files/GitHub CLI/gh.exe\" repo edit tailerchimchar/League_AI_Video_Editor --default-branch main)",
+      "Bash(git push:*)",
+      "mcp__chrome-devtools__navigate_page"
+    ]
+  }
+}

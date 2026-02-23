@@ -1,35 +1,90 @@
-import { useState, useRef, useCallback } from "react";
+import { useState, useRef, useCallback, useEffect } from "react";
+import Markdown from "react-markdown";
+import VideoUploader from "./components/VideoUploader";
+import ExtractionStatus from "./components/ExtractionStatus";
+import FrameTimeline from "./components/FrameTimeline";
+import SegmentList from "./components/SegmentList";
+import ReportView from "./components/ReportView";
+import AIVisionOverlay, { useAIVision } from "./components/AIVisionOverlay";
+import VideoControls from "./components/VideoControls";
 
-type Status = "idle" | "uploading" | "processing" | "done" | "error";
+type Mode = "pipeline" | "legacy";
+type Status =
+  | "idle"
+  | "uploading"
+  | "uploaded"
+  | "extracting"
+  | "extracted"
+  | "analyzing"
+  | "analyzed"
+  | "error";
 
 interface ApiError {
   error_code: string;
   message: string;
-  details?: unknown;
 }
 
 export default function App() {
+  const [mode, setMode] = useState<Mode>("pipeline");
   const [status, setStatus] = useState<Status>("idle");
   const [error, setError] = useState<ApiError | null>(null);
-  const [videoUrl, setVideoUrl] = useState<string | null>(null);
-  const [dragOver, setDragOver] = useState(false);
+  const [videoId, setVideoId] = useState<string | null>(null);
+  const [videoMeta, setVideoMeta] = useState<{ width: number; height: number } | null>(null);
+  const videoElRef = useRef<HTMLVideoElement>(null);
+  const aiVision = useAIVision(videoId ?? "");
+
+  // Legacy mode state
+  const [legacyAnalysis, setLegacyAnalysis] = useState("");
   const inputRef = useRef<HTMLInputElement>(null);
+  const eventSourceRef = useRef<EventSource | null>(null);
 
-  const upload = useCallback(
+  const closeEventSource = useCallback(() => {
+    if (eventSourceRef.current) {
+      eventSourceRef.current.close();
+      eventSourceRef.current = null;
+    }
+  }, []);
+
+  useEffect(() => {
+    return () => closeEventSource();
+  }, [closeEventSource]);
+
+  // ── Pipeline mode handlers ─────────────────────────────────
+  const handlePipelineUpload = useCallback((id: string, _filename: string, meta: { width: number | null; height: number | null; status?: string }) => {
+    setVideoId(id);
+    setVideoMeta(meta.width && meta.height ? { width: meta.width, height: meta.height } : null);
+    // If the video was already extracted (e.g., deduplicated upload), skip to extracted state
+    setStatus(meta.status === "extracted" ? "extracted" : "uploaded");
+    setError(null);
+  }, []);
+
+  const handlePipelineError = useCallback((err: ApiError) => {
+    setError(err);
+    setStatus("error");
+  }, []);
+
+  const handleExtractionComplete = useCallback(() => {
+    setStatus("extracted");
+    aiVision.invalidateFrames();
+  }, [aiVision.invalidateFrames]);
+
+  const handleExtractionError = useCallback((message: string) => {
+    setError({ error_code: "EXTRACTION_ERROR", message });
+    setStatus("error");
+  }, []);
+
+  // ── Legacy mode handlers ───────────────────────────────────
+  const legacyUpload = useCallback(
     async (file: File) => {
-      // Reset
+      closeEventSource();
       setError(null);
-      if (videoUrl) URL.revokeObjectURL(videoUrl);
-      setVideoUrl(null);
+      setVideoId(null);
+      setLegacyAnalysis("");
 
-      // Client-side guard
       const ext = file.name.split(".").pop()?.toLowerCase();
       if (!ext || !["mp4", "webm"].includes(ext)) {
         setStatus("error");
-        setError({
-          error_code: "INVALID_EXTENSION",
-          message: "Only .mp4 and .webm files are accepted.",
-        });
+        setError({ error_code: "INVALID_EXTENSION", message: "Only .mp4 and .webm files are accepted." });
         return;
       }
 
@@ -38,95 +93,219 @@ export default function App() {
       form.append("file", file);
 
       try {
-        const res = await fetch("/api/v1/video", {
-          method: "POST",
-          body: form,
-        });
-
+        const res = await fetch("/api/v1/video", { method: "POST", body: form });
         if (!res.ok) {
           const body: ApiError = await res.json();
           setStatus("error");
           setError(body);
           return;
         }
-
-        setStatus("processing");
-        const blob = await res.blob();
-        setVideoUrl(URL.createObjectURL(blob));
-        setStatus("done");
+        const data = await res.json();
+        setVideoId(data.video_id);
+        setStatus("uploaded");
       } catch {
         setStatus("error");
-        setError({
-          error_code: "NETWORK_ERROR",
-          message: "Could not reach the server. Is the API running on :8000?",
-        });
+        setError({ error_code: "NETWORK_ERROR", message: "Could not reach the server." });
       }
     },
-    [videoUrl],
+    [closeEventSource]
   );
 
-  const onDrop = useCallback(
-    (e: React.DragEvent) => {
-      e.preventDefault();
-      setDragOver(false);
-      const file = e.dataTransfer.files[0];
-      if (file) upload(file);
-    },
-    [upload],
-  );
+  const legacyAnalyze = useCallback(() => {
+    if (!videoId) return;
+    closeEventSource();
+    setLegacyAnalysis("");
+    setError(null);
+    setStatus("analyzing");
 
-  const onFileChange = useCallback(
-    (e: React.ChangeEvent<HTMLInputElement>) => {
-      const file = e.target.files?.[0];
-      if (file) upload(file);
-    },
-    [upload],
-  );
+    const es = new EventSource(`/api/v1/analyze/${videoId}`);
+    eventSourceRef.current = es;
+
+    es.onmessage = (event) => {
+      const data = JSON.parse(event.data);
+      if (data.type === "text") {
+        setLegacyAnalysis((prev) => prev + data.text);
+      } else if (data.type === "done") {
+        setStatus("analyzed");
+        es.close();
+        eventSourceRef.current = null;
+      } else if (data.type === "error") {
+        setStatus("error");
+        setError({ error_code: "ANALYSIS_ERROR", message: data.message });
+        es.close();
+        eventSourceRef.current = null;
+      }
+    };
+
+    es.onerror = () => {
+      if (es.readyState === EventSource.CLOSED) return;
+      setStatus("error");
+      setError({ error_code: "SSE_ERROR", message: "Lost connection to the analysis stream." });
+      es.close();
+      eventSourceRef.current = null;
+    };
+  }, [videoId, closeEventSource]);
+
+  const reset = useCallback(() => {
+    closeEventSource();
+    setStatus("idle");
+    setError(null);
+    setVideoId(null);
+    setVideoMeta(null);
+    setLegacyAnalysis("");
+  }, [closeEventSource]);
+
+  // ── Video URL ──────────────────────────────────────────────
+  const videoUrl = videoId
+    ? mode === "pipeline"
+      ? `/api/v1/videos/${videoId}`
+      : `/api/v1/video/${videoId}`
+    : null;
 
   return (
     <div className="app">
-      <h1>League AI Video Editor</h1>
-      <p className="subtitle">Upload a gameplay clip for analysis</p>
+      <header className="app-header">
+        <h1>League AI Video Editor</h1>
+        <div className="mode-toggle">
+          <button
+            className={`mode-btn ${mode === "pipeline" ? "active" : ""}`}
+            onClick={() => { reset(); setMode("pipeline"); }}
+          >
+            Extraction Pipeline
+          </button>
+          <button
+            className={`mode-btn ${mode === "legacy" ? "active" : ""}`}
+            onClick={() => { reset(); setMode("legacy"); }}
+          >
+            Quick Analysis
+          </button>
+        </div>
+      </header>
 
-      <div
-        className={`dropzone${dragOver ? " drag-over" : ""}`}
-        onDragOver={(e) => {
-          e.preventDefault();
-          setDragOver(true);
-        }}
-        onDragLeave={() => setDragOver(false)}
-        onDrop={onDrop}
-        onClick={() => inputRef.current?.click()}
-      >
-        <p className="dropzone-label">
-          Drag &amp; drop a video here, or click to browse
-        </p>
-        <p className="dropzone-hint">.mp4 or .webm &middot; max 60 s &middot; max 50 MB</p>
-        <input
-          ref={inputRef}
-          type="file"
-          accept=".mp4,.webm,video/mp4,video/webm"
-          onChange={onFileChange}
-          hidden
+      <p className="subtitle">
+        {mode === "pipeline"
+          ? "Upload a gameplay clip for structured data extraction + evidence-grounded coaching"
+          : "Upload a gameplay clip for quick frame-based analysis"}
+      </p>
+
+      {/* ── Upload ── */}
+      {status === "idle" && mode === "pipeline" && (
+        <VideoUploader
+          onUploadComplete={handlePipelineUpload}
+          onError={handlePipelineError}
         />
-      </div>
+      )}
 
-      {status !== "idle" && (
-        <div className={`status-bar ${status}`}>
-          {status === "uploading" && "Uploading\u2026"}
-          {status === "processing" && "Processing\u2026"}
-          {status === "done" && "Done!"}
-          {status === "error" && error && (
-            <span className="error-msg">
-              {error.message}{" "}
-              <code className="error-code">{error.error_code}</code>
-            </span>
-          )}
+      {status === "idle" && mode === "legacy" && (
+        <div className="dropzone" onClick={() => inputRef.current?.click()}>
+          <p className="dropzone-label">Drag &amp; drop a video here, or click to browse</p>
+          <p className="dropzone-hint">.mp4 or .webm &middot; max 60 s &middot; max 50 MB</p>
+          <input
+            ref={inputRef}
+            type="file"
+            accept=".mp4,.webm"
+            onChange={(e) => {
+              const file = e.target.files?.[0];
+              if (file) legacyUpload(file);
+            }}
+            hidden
+          />
         </div>
       )}
 
+      {/* ── Error display ── */}
+      {status === "error" && error && (
+        <div className="status-bar error">
+          <span className="error-msg">
+            {error.message} <code className="error-code">{error.error_code}</code>
+          </span>
+          <button className="reset-btn" onClick={reset}>Try Again</button>
+        </div>
+      )}
+
+      {/* ── Video player ── */}
       {videoUrl && (
-        <video className="player" src={videoUrl} controls autoPlay />
+        <div className="player-wrapper">
+          <div className="player-container">
+            <video ref={videoElRef} className="player" src={videoUrl} autoPlay />
+            {mode === "pipeline" && videoId && (
+              <AIVisionOverlay
+                videoRef={videoElRef}
+                videoId={videoId}
+                nativeWidth={videoMeta?.width ?? 1920}
+                nativeHeight={videoMeta?.height ?? 1080}
+                enabled={aiVision.enabled}
+                frameVersion={aiVision.frameVersion}
+              />
+            )}
+          </div>
+          <VideoControls
+            videoRef={videoElRef}
+            extraControls={
+              mode === "pipeline" ? (
+                <button
+                  className={`ai-vision-toggle${aiVision.enabled ? " active" : ""}`}
+                  onClick={aiVision.toggle}
+                  disabled={aiVision.loading}
+                >
+                  {aiVision.loading ? "Loading..." : aiVision.enabled ? "Hide AI Vision" : "Show AI Vision"}
+                </button>
+              ) : undefined
+            }
+          />
+        </div>
+      )}
+
+      {/* ── Pipeline mode: extraction → data → report ── */}
+      {mode === "pipeline" && videoId && status !== "error" && (
+        <>
+          {(status === "uploaded" || status === "extracting") && (
+            <ExtractionStatus
+              videoId={videoId}
+              onComplete={handleExtractionComplete}
+              onError={handleExtractionError}
+            />
+          )}
+
+          {status === "extracted" && (
+            <>
+              <FrameTimeline videoId={videoId} />
+              <SegmentList videoId={videoId} />
+              <ReportView videoId={videoId} />
+            </>
+          )}
+        </>
+      )}
+
+      {/* ── Legacy mode: direct analysis ── */}
+      {mode === "legacy" && videoId && status !== "error" && (
+        <>
+          {(status === "uploaded" || status === "analyzed") && (
+            <button className="analyze-btn" onClick={legacyAnalyze}>
+              {status === "analyzed" ? "Re-Analyze" : "Analyze Gameplay"}
+            </button>
+          )}
+
+          {(status === "analyzing" || status === "analyzed" || legacyAnalysis) && (
+            <div className="analysis-panel">
+              <h2 className="analysis-title">Coaching Feedback</h2>
+              <div className="analysis-text">
+                {legacyAnalysis ? (
+                  <Markdown>{legacyAnalysis}</Markdown>
+                ) : (
+                  "Extracting frames and analyzing\u2026"
+                )}
+              </div>
+            </div>
+          )}
+        </>
+      )}
+
+      {/* ── New upload button when not idle ── */}
+      {status !== "idle" && (
+        <button className="reset-btn secondary" onClick={reset}>
+          Upload New Video
+        </button>
       )}
     </div>
   );

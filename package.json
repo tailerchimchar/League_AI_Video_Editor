@@ -4,7 +4,11 @@
   "scripts": {
     "dev": "concurrently -k -n api,web -c blue,green \"bun run dev:api\" \"bun run dev:web\"",
     "dev:api": "cd apps/api && .venv/Scripts/python -m uvicorn main:app --reload --port 8000",
-    "dev:web": "cd apps/web && bunx --bun vite --port 8080"
+    "dev:web": "cd apps/web && bunx --bun vite --port 8080",
+    "db:up": "docker compose up -d postgres",
+    "db:down": "docker compose down",
+    "db:migrate": "cd apps/api && .venv/Scripts/python -m migrations.run",
+    "db:reset": "docker compose down -v && docker compose up -d postgres"
   },
   "devDependencies": {
     "concurrently": "^9.1.2"

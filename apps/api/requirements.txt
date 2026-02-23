@@ -2,3 +2,15 @@ fastapi==0.115.8
 uvicorn[standard]==0.34.0
 python-multipart==0.0.20
 opencv-python-headless==4.11.0.86
+anthropic>=0.49.0
+python-dotenv>=1.0.0
+
+# Database
+asyncpg>=0.29.0
+
+# OCR
+pytesseract>=0.3.10
+numpy>=1.24.0
+
+# ONNX inference (Phase 1.5 YOLO detector)
+onnxruntime>=1.17.0

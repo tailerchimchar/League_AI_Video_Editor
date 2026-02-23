@@ -16,12 +16,20 @@ body {
 
 /* ── App shell ────────────────────────────────────────────────────── */
 .app {
-  max-width: 720px;
+  max-width: 900px;
   margin: 0 auto;
-  padding: 3rem 1.5rem;
+  padding: 2rem 1.5rem;
   display: flex;
   flex-direction: column;
   gap: 1.25rem;
+}
+
+.app-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  flex-wrap: wrap;
+  gap: 1rem;
 }
 
 h1 {
@@ -34,6 +42,36 @@ h1 {
   color: #888;
   font-size: 0.95rem;
   margin-top: -0.5rem;
+}
+
+/* ── Mode toggle ──────────────────────────────────────────────────── */
+.mode-toggle {
+  display: flex;
+  gap: 0.25rem;
+  background: #1a1d24;
+  border-radius: 8px;
+  padding: 3px;
+}
+
+.mode-btn {
+  padding: 0.4rem 0.9rem;
+  border: none;
+  border-radius: 6px;
+  background: transparent;
+  color: #888;
+  font-size: 0.8rem;
+  font-weight: 500;
+  cursor: pointer;
+  transition: all 0.15s;
+}
+
+.mode-btn.active {
+  background: #646cff;
+  color: #fff;
+}
+
+.mode-btn:hover:not(.active) {
+  color: #ccc;
 }
 
 /* ── Drop zone ────────────────────────────────────────────────────── */
@@ -52,6 +90,11 @@ h1 {
   background: rgba(100, 108, 255, 0.06);
 }
 
+.dropzone.uploading {
+  opacity: 0.6;
+  pointer-events: none;
+}
+
 .dropzone-label {
   font-size: 1rem;
   color: #ccc;
@@ -68,15 +111,22 @@ h1 {
   padding: 0.75rem 1rem;
   border-radius: 8px;
   font-size: 0.9rem;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 1rem;
 }
 
 .status-bar.uploading,
-.status-bar.processing {
+.status-bar.analyzing {
   background: rgba(100, 108, 255, 0.1);
   color: #8a90ff;
 }
 
-.status-bar.done {
+.status-bar.done,
+.status-bar.analyzed,
+.status-bar.uploaded,
+.status-bar.extracted {
   background: rgba(46, 204, 113, 0.1);
   color: #2ecc71;
 }
@@ -93,8 +143,481 @@ h1 {
 }
 
 /* ── Video player ─────────────────────────────────────────────────── */
+.player-wrapper {
+  display: flex;
+  flex-direction: column;
+  gap: 0;
+}
+
+.player-container {
+  position: relative;
+}
+
 .player {
   width: 100%;
-  border-radius: 10px;
+  border-radius: 10px 10px 0 0;
   background: #000;
+  display: block;
+}
+
+/* ── Custom video controls (below video) ─────────────────────────── */
+.video-controls {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  padding: 0.5rem 0.75rem;
+  background: #1a1d24;
+  border-radius: 0 0 10px 10px;
+  border: 1px solid #2a2d35;
+  border-top: none;
+}
+
+.vc-play,
+.vc-mute {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 28px;
+  height: 28px;
+  border: none;
+  border-radius: 4px;
+  background: transparent;
+  color: #ccc;
+  cursor: pointer;
+  flex-shrink: 0;
+  transition: color 0.1s, background 0.1s;
+}
+
+.vc-play:hover,
+.vc-mute:hover {
+  color: #fff;
+  background: rgba(255, 255, 255, 0.08);
+}
+
+.vc-time {
+  font-size: 0.75rem;
+  color: #888;
+  font-variant-numeric: tabular-nums;
+  flex-shrink: 0;
+  min-width: 2.5rem;
+  user-select: none;
+}
+
+.vc-seek {
+  flex: 1;
+  height: 20px;
+  display: flex;
+  align-items: center;
+  cursor: pointer;
+}
+
+.vc-seek-track {
+  position: relative;
+  width: 100%;
+  height: 4px;
+  background: #333;
+  border-radius: 2px;
+}
+
+.vc-seek-fill {
+  position: absolute;
+  top: 0;
+  left: 0;
+  height: 100%;
+  background: #646cff;
+  border-radius: 2px;
+  pointer-events: none;
+}
+
+.vc-seek-thumb {
+  position: absolute;
+  top: 50%;
+  width: 12px;
+  height: 12px;
+  background: #646cff;
+  border-radius: 50%;
+  transform: translate(-50%, -50%);
+  pointer-events: none;
+  opacity: 0;
+  transition: opacity 0.15s;
+}
+
+.vc-seek:hover .vc-seek-thumb {
+  opacity: 1;
+}
+
+.vc-volume {
+  width: 60px;
+  height: 4px;
+  accent-color: #646cff;
+  cursor: pointer;
+  flex-shrink: 0;
+}
+
+.ai-vision-canvas {
+  position: absolute;
+  top: 0;
+  left: 0;
+  pointer-events: none;
+  border-radius: 10px;
+}
+
+.ai-vision-toggle {
+  padding: 0.3rem 0.6rem;
+  border: 1px solid rgba(255, 255, 255, 0.15);
+  border-radius: 4px;
+  background: transparent;
+  color: #888;
+  font-size: 0.7rem;
+  font-weight: 500;
+  cursor: pointer;
+  transition: all 0.15s;
+  white-space: nowrap;
+  flex-shrink: 0;
+  margin-left: 0.25rem;
+}
+
+.ai-vision-toggle:hover {
+  background: rgba(255, 255, 255, 0.08);
+  color: #fff;
+  border-color: rgba(255, 255, 255, 0.3);
+}
+
+.ai-vision-toggle.active {
+  background: rgba(100, 108, 255, 0.6);
+  border-color: rgba(100, 108, 255, 0.8);
+  color: #fff;
+}
+
+.ai-vision-toggle:disabled {
+  opacity: 0.6;
+  cursor: not-allowed;
+}
+
+/* ── Buttons ──────────────────────────────────────────────────────── */
+.analyze-btn,
+.extract-btn,
+.report-btn {
+  padding: 0.75rem 1.5rem;
+  border: none;
+  border-radius: 8px;
+  background: #646cff;
+  color: #fff;
+  font-size: 1rem;
+  font-weight: 600;
+  cursor: pointer;
+  transition: background 0.15s;
+}
+
+.analyze-btn:hover,
+.extract-btn:hover,
+.report-btn:hover {
+  background: #535bf2;
+}
+
+.report-btn:disabled {
+  opacity: 0.6;
+  cursor: not-allowed;
+}
+
+.reset-btn {
+  padding: 0.5rem 1rem;
+  border: 1px solid #444;
+  border-radius: 6px;
+  background: transparent;
+  color: #ccc;
+  font-size: 0.85rem;
+  cursor: pointer;
+  transition: all 0.15s;
+}
+
+.reset-btn:hover {
+  border-color: #666;
+  color: #fff;
+}
+
+.reset-btn.secondary {
+  align-self: center;
+  margin-top: 0.5rem;
+}
+
+/* ── Extraction panel ─────────────────────────────────────────────── */
+.extraction-form {
+  display: flex;
+  flex-direction: column;
+  gap: 0.5rem;
+}
+
+.champion-input-row {
+  display: flex;
+  gap: 0.5rem;
+}
+
+.champion-input {
+  flex: 1;
+  padding: 0.5rem 0.75rem;
+  border: 1px solid #333;
+  border-radius: 6px;
+  background: #1a1d23;
+  color: #e0e0e0;
+  font-size: 0.875rem;
+  font-family: inherit;
+}
+
+.champion-input::placeholder {
+  color: #666;
+}
+
+.champion-input:focus {
+  outline: none;
+  border-color: #646cff;
+}
+
+.extraction-panel {
+  display: flex;
+  flex-direction: column;
+  gap: 0.75rem;
+}
+
+.extraction-status {
+  display: flex;
+  flex-direction: column;
+  gap: 0.5rem;
+}
+
+.progress-bar-container {
+  width: 100%;
+  height: 8px;
+  background: #1a1d24;
+  border-radius: 4px;
+  overflow: hidden;
+}
+
+.progress-bar-fill {
+  height: 100%;
+  background: #646cff;
+  border-radius: 4px;
+  transition: width 0.3s ease;
+}
+
+.extraction-info {
+  font-size: 0.85rem;
+  color: #888;
+}
+
+/* ── Panel titles ─────────────────────────────────────────────────── */
+.panel-title {
+  font-size: 1.1rem;
+  font-weight: 600;
+  color: #fff;
+  margin-bottom: 0.75rem;
+}
+
+.loading-text {
+  font-size: 0.9rem;
+  color: #666;
+}
+
+/* ── Frame timeline ───────────────────────────────────────────────── */
+.frame-timeline-panel {
+  background: #1a1d24;
+  border: 1px solid #2a2d35;
+  border-radius: 12px;
+  padding: 1.25rem;
+}
+
+.frame-timeline {
+  overflow-x: auto;
+}
+
+.frame-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 0.8rem;
+}
+
+.frame-table th {
+  text-align: left;
+  padding: 0.5rem 0.75rem;
+  color: #888;
+  font-weight: 500;
+  border-bottom: 1px solid #2a2d35;
+  white-space: nowrap;
+}
+
+.frame-table td {
+  padding: 0.4rem 0.75rem;
+  color: #ccc;
+  border-bottom: 1px solid rgba(42, 45, 53, 0.5);
+  white-space: nowrap;
+}
+
+.frame-table tr:hover td {
+  background: rgba(100, 108, 255, 0.04);
+}
+
+.hp-loss {
+  color: #e74c3c;
+}
+
+.hp-gain {
+  color: #2ecc71;
+}
+
+/* ── Segments ─────────────────────────────────────────────────────── */
+.segments-panel {
+  background: #1a1d24;
+  border: 1px solid #2a2d35;
+  border-radius: 12px;
+  padding: 1.25rem;
+}
+
+.segment-list {
+  display: flex;
+  flex-direction: column;
+  gap: 0.5rem;
+}
+
+.segment-item {
+  display: flex;
+  align-items: center;
+  gap: 0.75rem;
+  padding: 0.5rem 0;
+  border-bottom: 1px solid rgba(42, 45, 53, 0.5);
+}
+
+.segment-item:last-child {
+  border-bottom: none;
+}
+
+.segment-badge {
+  padding: 0.2rem 0.5rem;
+  border-radius: 4px;
+  font-size: 0.7rem;
+  font-weight: 600;
+  color: #fff;
+  letter-spacing: 0.03em;
+}
+
+.segment-time {
+  font-size: 0.85rem;
+  color: #ccc;
+  font-variant-numeric: tabular-nums;
+}
+
+.segment-confidence {
+  font-size: 0.75rem;
+  color: #666;
+  margin-left: auto;
+}
+
+/* ── Report panel ─────────────────────────────────────────────────── */
+.report-panel {
+  background: #1a1d24;
+  border: 1px solid #2a2d35;
+  border-radius: 12px;
+  padding: 1.25rem;
+}
+
+.report-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: 1rem;
+}
+
+.report-header .panel-title {
+  margin-bottom: 0;
+}
+
+/* ── Analysis panel (legacy) ──────────────────────────────────────── */
+.analysis-panel {
+  background: #1a1d24;
+  border: 1px solid #2a2d35;
+  border-radius: 12px;
+  padding: 1.5rem;
+}
+
+.analysis-title {
+  font-size: 1.1rem;
+  font-weight: 600;
+  color: #fff;
+  margin-bottom: 1rem;
+}
+
+.analysis-text {
+  font-size: 0.9rem;
+  line-height: 1.7;
+  color: #ccc;
+}
+
+/* ── Markdown inside analysis ────────────────────────────────────── */
+.analysis-text h1 {
+  font-size: 1.3rem;
+  font-weight: 700;
+  color: #fff;
+  margin: 1.25rem 0 0.5rem;
+  padding-bottom: 0.4rem;
+  border-bottom: 1px solid #2a2d35;
+}
+
+.analysis-text h2 {
+  font-size: 1.1rem;
+  font-weight: 600;
+  color: #e0e0e0;
+  margin: 1.1rem 0 0.4rem;
+}
+
+.analysis-text h3 {
+  font-size: 0.95rem;
+  font-weight: 600;
+  color: #b0b0b0;
+  margin: 0.9rem 0 0.3rem;
+}
+
+.analysis-text p {
+  margin: 0.5rem 0;
+}
+
+.analysis-text ul,
+.analysis-text ol {
+  margin: 0.4rem 0 0.4rem 1.25rem;
+}
+
+.analysis-text li {
+  margin: 0.25rem 0;
+}
+
+.analysis-text li::marker {
+  color: #646cff;
+}
+
+.analysis-text strong {
+  color: #fff;
+  font-weight: 600;
+}
+
+.analysis-text em {
+  color: #a0a8d0;
+}
+
+.analysis-text code {
+  background: #252830;
+  padding: 0.15rem 0.4rem;
+  border-radius: 4px;
+  font-size: 0.85em;
+  color: #8a90ff;
+}
+
+.analysis-text hr {
+  border: none;
+  border-top: 1px solid #2a2d35;
+  margin: 1rem 0;
+}
+
+.analysis-text blockquote {
+  border-left: 3px solid #646cff;
+  padding-left: 0.75rem;
+  margin: 0.5rem 0;
+  color: #999;
 }
