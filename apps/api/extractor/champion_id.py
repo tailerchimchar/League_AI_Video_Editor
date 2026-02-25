@@ -33,10 +33,11 @@ logger = logging.getLogger(__name__)
 _REPO_ROOT = Path(__file__).resolve().parent.parent.parent.parent
 _ICONS_DIR = _REPO_ROOT / "data" / "champions" / "icons"
 _SKINS_DIR = _REPO_ROOT / "data" / "champions" / "skins"
+_SPRITES_DIR = _REPO_ROOT / "data" / "champions" / "sprites"
 _MANIFEST_PATH = _REPO_ROOT / "data" / "champions" / "manifest.json"
 
-# Below this confidence, report "unknown"
-MATCH_CONFIDENCE_THRESHOLD = 0.25
+# Below this confidence, report "unknown" — set to 0 to always pick the best match
+MATCH_CONFIDENCE_THRESHOLD = 0.0
 
 # Maximum skins per champion to load (default + top N popular).
 # Skin 0 is always the default; we take the first MAX_SKINS_PER_CHAMP skins
@@ -137,12 +138,39 @@ class ChampionIdentifier:
                 self._references.append((key, f"{key}_icon", spatial_hist, template))
                 icon_count += 1
 
-        total = skin_count + icon_count
+        # Load top-down sprites rendered from 3D models (default + all skins)
+        sprite_count = 0
+        if _SPRITES_DIR.exists():
+            for key in manifest:
+                # Gather all sprites: {Key}.png, {Key}_skin{N}.png, {Key}_mobafire_*.png
+                sprite_paths = []
+                default_sprite = _SPRITES_DIR / f"{key}.png"
+                if default_sprite.exists():
+                    sprite_paths.append((default_sprite, f"{key}_sprite"))
+                for skin_sprite in sorted(_SPRITES_DIR.glob(f"{key}_skin*.png")):
+                    sprite_paths.append((skin_sprite, f"{skin_sprite.stem}_sprite"))
+                for mf_sprite in sorted(_SPRITES_DIR.glob(f"{key}_mobafire_*.png")):
+                    sprite_paths.append((mf_sprite, f"{mf_sprite.stem}_sprite"))
+
+                for sprite_path, label in sprite_paths:
+                    img = cv2.imread(str(sprite_path), cv2.IMREAD_UNCHANGED)
+                    if img is None:
+                        continue
+                    # Handle alpha channel: composite onto black background
+                    if len(img.shape) == 3 and img.shape[2] == 4:
+                        alpha = img[:, :, 3:] / 255.0
+                        img = (img[:, :, :3] * alpha).astype(np.uint8)
+                    spatial_hist = self._compute_spatial_hist(img)
+                    template = cv2.resize(img, _TEMPLATE_SIZE)
+                    self._references.append((key, label, spatial_hist, template))
+                    sprite_count += 1
+
+        total = skin_count + icon_count + sprite_count
         if total > 0:
             self._available = True
             logger.info(
-                "Champion identifier ready: %d references (%d skins + %d icons, icons_only=%s)",
-                total, skin_count, icon_count, icons_only,
+                "Champion identifier ready: %d references (%d skins + %d icons + %d sprites, icons_only=%s)",
+                total, skin_count, icon_count, sprite_count, icons_only,
             )
         else:
             logger.warning("No champion references loaded")
@@ -294,6 +322,201 @@ class ChampionIdentifier:
             "name": self._champion_names.get(best_key, best_key),
             "confidence": round(best_score, 3),
         }
+
+    def match_detection(
+        self,
+        frame: np.ndarray,
+        bbox: list[float],
+        candidate_keys: list[str],
+    ) -> dict | None:
+        """Match a YOLO detection crop against a narrowed set of candidate champions.
+
+        This is the reusable matching method for any role — allies (1-of-4),
+        enemies (1-of-5), or player verification (1-of-1). Crops the body
+        region from the bbox and scores against only the candidate references.
+
+        Args:
+            frame: Full video frame (BGR numpy array).
+            bbox: Detection bounding box [x1, y1, x2, y2].
+            candidate_keys: Champion keys to match against (e.g., ["lux", "thresh"]).
+
+        Returns:
+            {"key": str, "name": str, "score": float} or None if no confident match.
+        """
+        if not self._available or not candidate_keys:
+            return None
+
+        # Extract body crop: skip top 10% (health bar/name) and bottom 5% (feet)
+        x1, y1, x2, y2 = [int(v) for v in bbox]
+        det_h = y2 - y1
+        det_w = x2 - x1
+        if det_h < 10 or det_w < 10:
+            return None
+
+        crop_y1 = y1 + int(det_h * 0.10)
+        crop_y2 = y2 - int(det_h * 0.05)
+
+        fh, fw = frame.shape[:2]
+        crop_y1 = max(0, min(crop_y1, fh - 1))
+        crop_y2 = max(crop_y1 + 1, min(crop_y2, fh))
+        crop_x1 = max(0, min(x1, fw - 1))
+        crop_x2 = max(crop_x1 + 1, min(x2, fw))
+
+        body_crop = frame[crop_y1:crop_y2, crop_x1:crop_x2]
+        if body_crop.size == 0 or body_crop.shape[0] < 8 or body_crop.shape[1] < 8:
+            return None
+
+        # Compute features for the detection crop
+        crop_hist = self._compute_spatial_hist(body_crop)
+        crop_tmpl = cv2.resize(body_crop, _TEMPLATE_SIZE)
+
+        # Filter references to only candidate keys
+        candidate_set = set(candidate_keys)
+
+        # Score against candidate references only (same scoring as _match_portrait
+        # but with heavier color weight — in-game models vary more by color)
+        best_per_champ: dict[str, float] = {}
+        for champ_key, label, ref_hist, ref_tmpl in self._references:
+            if champ_key not in candidate_set:
+                continue
+
+            hist_score = cv2.compareHist(
+                crop_hist.reshape(-1).astype(np.float32),
+                ref_hist.reshape(-1).astype(np.float32),
+                cv2.HISTCMP_CORREL,
+            )
+            hist_score = max(0.0, hist_score)
+
+            result = cv2.matchTemplate(crop_tmpl, ref_tmpl, cv2.TM_CCOEFF_NORMED)
+            tmpl_score = max(0.0, float(result[0, 0]))
+
+            # Heavier color weight for in-game detection vs portrait matching
+            score = 0.7 * hist_score + 0.3 * tmpl_score
+
+            if champ_key not in best_per_champ or score > best_per_champ[champ_key]:
+                best_per_champ[champ_key] = score
+
+        if not best_per_champ:
+            return None
+
+        ranked = sorted(best_per_champ.items(), key=lambda kv: kv[1], reverse=True)
+        best_key, best_score = ranked[0]
+
+        # Relative threshold: best must beat second-best by 15% (easy for small candidate sets)
+        if len(ranked) >= 2:
+            second_score = ranked[1][1]
+            if second_score > 0 and (best_score - second_score) / second_score < 0.15:
+                return None
+
+        if best_score < 0.1:
+            return None
+
+        return {
+            "key": best_key,
+            "name": self._champion_names.get(best_key, best_key),
+            "score": round(best_score, 4),
+        }
+
+    def identify_from_portraits_multi(
+        self, frames: list[np.ndarray], width: int, height: int, n_samples: int = 5
+    ) -> dict:
+        """Multi-frame portrait identification with voting for improved accuracy.
+
+        Samples up to n_samples frames evenly, runs identify_from_portraits on each,
+        accumulates confidence per ally slot, and picks the highest cumulative score
+        with deduplication (no two slots can be the same champion).
+
+        Args:
+            frames: List of frame numpy arrays (BGR).
+            width: Video width.
+            height: Video height.
+            n_samples: Max frames to sample (evenly spaced from the list).
+
+        Returns:
+            Same format as identify_from_portraits: {"player": {...}, "allies": [...]}.
+        """
+        if not self._available or not frames:
+            return {"player": None, "allies": []}
+
+        # Sample frames evenly
+        n = min(n_samples, len(frames))
+        if n <= 0:
+            return {"player": None, "allies": []}
+
+        step = max(1, len(frames) // n)
+        sampled = [frames[i * step] for i in range(n) if i * step < len(frames)]
+
+        # Run portrait ID on each sampled frame
+        results = []
+        for frame in sampled:
+            try:
+                result = self.identify_from_portraits(frame, width, height)
+                results.append(result)
+            except Exception:
+                logger.debug("Portrait ID failed on one sample frame", exc_info=True)
+
+        if not results:
+            return {"player": None, "allies": []}
+
+        # Accumulate player votes: champion_key -> total_confidence
+        player_votes: dict[str, float] = {}
+        player_names: dict[str, str] = {}
+        for r in results:
+            p = r.get("player")
+            if p and p["key"] != "unknown":
+                player_votes[p["key"]] = player_votes.get(p["key"], 0) + p["confidence"]
+                player_names[p["key"]] = p["name"]
+
+        # Best player
+        best_player = None
+        if player_votes:
+            best_key = max(player_votes, key=player_votes.get)
+            best_player = {
+                "key": best_key,
+                "name": player_names[best_key],
+                "confidence": round(player_votes[best_key] / len(results), 3),
+            }
+
+        # Accumulate per-slot ally votes
+        n_slots = max((len(r.get("allies", [])) for r in results), default=0)
+        slot_votes: list[dict[str, float]] = [{} for _ in range(n_slots)]
+        slot_names: list[dict[str, str]] = [{} for _ in range(n_slots)]
+
+        for r in results:
+            allies = r.get("allies", [])
+            for slot_idx, ally in enumerate(allies):
+                if slot_idx >= n_slots:
+                    break
+                if ally["key"] != "unknown":
+                    slot_votes[slot_idx][ally["key"]] = (
+                        slot_votes[slot_idx].get(ally["key"], 0) + ally["confidence"]
+                    )
+                    slot_names[slot_idx][ally["key"]] = ally["name"]
+
+        # Pick best per slot with deduplication
+        used_keys: set[str] = set()
+        if best_player:
+            used_keys.add(best_player["key"])
+
+        allies = []
+        for slot_idx in range(n_slots):
+            votes = slot_votes[slot_idx]
+            names = slot_names[slot_idx]
+            # Sort by cumulative confidence, skip already-used keys
+            ranked = sorted(votes.items(), key=lambda kv: kv[1], reverse=True)
+            chosen = None
+            for key, total_conf in ranked:
+                if key not in used_keys:
+                    chosen = {
+                        "key": key,
+                        "name": names[key],
+                        "confidence": round(total_conf / len(results), 3),
+                    }
+                    used_keys.add(key)
+                    break
+            allies.append(chosen or {"key": "unknown", "name": "Unknown", "confidence": 0.0})
+
+        return {"player": best_player, "allies": allies}
 
     def get_champion_name(self, key: str) -> str:
         """Look up display name for a champion key."""

@@ -44,7 +44,8 @@ class _Track:
 
     __slots__ = (
         "track_id", "bbox", "class_history", "confidence_history",
-        "champion", "champion_confidence", "frames_since_seen",
+        "champion", "champion_confidence", "champion_votes",
+        "champion_vote_names", "frames_since_seen",
     )
 
     def __init__(self, track_id: int, det: dict):
@@ -54,6 +55,8 @@ class _Track:
         self.confidence_history: list[float] = [det.get("confidence", 0.0)]
         self.champion: str | None = det.get("champion")
         self.champion_confidence: float | None = det.get("champion_confidence")
+        self.champion_votes: dict[str, float] = {}
+        self.champion_vote_names: dict[str, str] = {}  # key -> display name
         self.frames_since_seen = 0
 
     def update(self, det: dict) -> None:
@@ -72,16 +75,46 @@ class _Track:
         if len(self.confidence_history) > HISTORY_LEN:
             self.confidence_history.pop(0)
 
-        # Preserve champion identity once assigned
-        if det.get("champion") and not self.champion:
-            self.champion = det["champion"]
-            self.champion_confidence = det.get("champion_confidence")
-        # Update if new detection has higher confidence champion
-        elif det.get("champion") and det.get("champion_confidence", 0) > (self.champion_confidence or 0):
-            self.champion = det["champion"]
-            self.champion_confidence = det.get("champion_confidence")
+        # Preserve champion identity once assigned (for played_champion from pipeline)
+        if det.get("champion") and not det.get("champion_vote_key"):
+            if not self.champion:
+                self.champion = det["champion"]
+                self.champion_confidence = det.get("champion_confidence")
+            elif det.get("champion_confidence", 0) > (self.champion_confidence or 0):
+                self.champion = det["champion"]
+                self.champion_confidence = det.get("champion_confidence")
+
+        # Accumulate champion match votes (for ally/enemy identification)
+        vote_key = det.get("champion_vote_key")
+        vote_score = det.get("champion_vote_score", 0.0)
+        if vote_key and vote_score > 0:
+            self.champion_votes[vote_key] = self.champion_votes.get(vote_key, 0.0) + vote_score
+            if det.get("champion_vote_name"):
+                self.champion_vote_names[vote_key] = det["champion_vote_name"]
+            self._resolve_champion_from_votes()
 
         self.frames_since_seen = 0
+
+    def _resolve_champion_from_votes(self) -> None:
+        """Derive champion identity from accumulated votes if confident enough."""
+        if not self.champion_votes:
+            return
+        total = sum(self.champion_votes.values())
+        if total < 3.0:
+            return  # Not enough evidence yet
+        best_key = max(self.champion_votes, key=self.champion_votes.get)
+        best_score = self.champion_votes[best_key]
+        fraction = best_score / total
+        if fraction >= 0.5:
+            self.champion = self.champion_vote_names.get(best_key, best_key)
+            self.champion_confidence = round(fraction, 4)
+
+    def clear_champion_votes(self) -> None:
+        """Clear accumulated votes (used when deduplication reassigns a champion)."""
+        self.champion_votes.clear()
+        self.champion_vote_names.clear()
+        self.champion = None
+        self.champion_confidence = None
 
     @property
     def voted_class(self) -> str:
@@ -179,5 +212,19 @@ class SimpleTracker:
             surviving.append(new_track)
         self._tracks = surviving
 
-        # Step 4: Export all active tracks as detections
+        # Step 4: Deduplicate ally champion assignments
+        # If two freindly_champion tracks claim the same champion, keep the higher confidence one
+        champ_owners: dict[str, _Track] = {}
+        for track in self._tracks:
+            if track.champion and track.voted_class == "freindly_champion":
+                existing = champ_owners.get(track.champion)
+                if existing is None:
+                    champ_owners[track.champion] = track
+                elif (track.champion_confidence or 0) > (existing.champion_confidence or 0):
+                    existing.clear_champion_votes()
+                    champ_owners[track.champion] = track
+                else:
+                    track.clear_champion_votes()
+
+        # Step 5: Export all active tracks as detections
         return [t.to_detection() for t in self._tracks if t.frames_since_seen == 0]

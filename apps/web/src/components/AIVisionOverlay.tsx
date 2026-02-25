@@ -75,6 +75,7 @@ function getDisplayLabel(det: { class_name: string; champion?: string | null; ch
     return `You ${confPct}%`;
   }
   if (cn === "freindly_champion") {
+    if (det.champion) return `Ally: ${det.champion} ${confPct}%`;
     return `Ally ${confPct}%`;
   }
   if (cn === "enemy_champion") {

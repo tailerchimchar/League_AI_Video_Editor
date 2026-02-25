@@ -201,3 +201,65 @@ export async function getHealthBarDebug(
   const res = await fetch(`${BASE}/videos/${videoId}/debug/health-bar-colors?${query}`);
   return handleResponse(res);
 }
+
+// ── Champion ID Debug ───────────────────────────────────────────────
+
+export interface ChampionIdAllyPortrait {
+  slot: number;
+  key: string;
+  name: string;
+  confidence: number;
+  portrait_crop_b64: string | null;
+  icon_b64: string | null;
+}
+
+export interface ChampionIdCandidateScore {
+  key: string;
+  name: string;
+  hist_score: number;
+  tmpl_score: number;
+  combined: number;
+  icon_b64: string | null;
+  best_ref_label: string | null;
+  best_ref_b64: string | null;
+}
+
+export interface ChampionIdDetection {
+  confidence: number;
+  bbox: [number, number, number, number];
+  body_crop_b64: string | null;
+  context_b64: string | null;
+  match_result: { key: string; name: string; score: number } | null;
+  candidate_scores: ChampionIdCandidateScore[];
+}
+
+export interface ChampionIdDebugResponse {
+  frame_index: number;
+  timestamp_ms: number;
+  frame_width: number;
+  frame_height: number;
+  max_frame_index: number;
+  portrait_strip_b64: string | null;
+  player: {
+    key: string;
+    name: string;
+    confidence: number;
+    portrait_crop_b64: string | null;
+  };
+  ally_portraits: ChampionIdAllyPortrait[];
+  ally_detections: ChampionIdDetection[];
+  enemy_detections: ChampionIdDetection[];
+}
+
+/** Get champion ID debug analysis for a single frame. */
+export async function getChampionIdDebug(
+  videoId: string,
+  frameIndex: number,
+  sampleFps?: number,
+): Promise<ChampionIdDebugResponse> {
+  const query = new URLSearchParams();
+  query.set("frame_index", String(frameIndex));
+  if (sampleFps != null) query.set("sample_fps", String(sampleFps));
+  const res = await fetch(`${BASE}/videos/${videoId}/debug/champion-id?${query}`);
+  return handleResponse(res);
+}

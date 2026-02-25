@@ -38,15 +38,17 @@ CROP_REGIONS_1080P = {
 # ---------------------------------------------------------------------------
 
 # Player's own champion portrait (bottom-center HUD, face region only)
-PLAYER_PORTRAIT_REGION = {"x": 650, "y": 1005, "w": 60, "h": 52}
+# Shifted 20px left, expanded 20px top-right diagonally
+PLAYER_PORTRAIT_REGION = {"x": 628, "y": 979, "w": 92, "h": 84}
 
 # 4 ally champion portraits above the minimap (face regions, avoiding
 # the cooldown circle indicator at the top of each frame)
+# Expanded 10px bottom-right diagonally
 ALLY_PORTRAIT_SLOTS: list[dict[str, int]] = [
-    {"x": 1635, "y": 688, "w": 50, "h": 38},  # Ally 1 (leftmost)
-    {"x": 1710, "y": 688, "w": 50, "h": 38},  # Ally 2
-    {"x": 1784, "y": 688, "w": 50, "h": 38},  # Ally 3
-    {"x": 1856, "y": 688, "w": 50, "h": 38},  # Ally 4 (rightmost)
+    {"x": 1629, "y": 682, "w": 66, "h": 60},  # Ally 1 (leftmost)
+    {"x": 1704, "y": 682, "w": 66, "h": 60},  # Ally 2
+    {"x": 1778, "y": 682, "w": 66, "h": 60},  # Ally 3
+    {"x": 1850, "y": 682, "w": 66, "h": 60},  # Ally 4 (rightmost)
 ]
 
 # OCR field types that use numeric whitelist

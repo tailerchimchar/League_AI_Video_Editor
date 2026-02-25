@@ -95,6 +95,8 @@ def _process_frame_batch(
     prev_ocr: dict | None,
     prev_ts: int,
     game_champions: dict | None = None,
+    champion_identifier: ChampionIdentifier | None = None,
+    ally_candidate_keys: list[str] | None = None,
 ) -> list[dict]:
     """Process a batch of frames: batch YOLO detection on GPU, then sequential OCR/tracking."""
     # Step 1: Batch YOLO detection (single GPU call for all frames)
@@ -131,6 +133,18 @@ def _process_frame_batch(
                             1.0 if player_info.get("confidence", 0) >= 1.0
                             else player_info.get("confidence", 0)
                         )
+
+        # Match freindly_champion detections against known ally roster
+        if champion_identifier and ally_candidate_keys and detections:
+            for det in detections:
+                if det["class_name"] == "freindly_champion":
+                    match = champion_identifier.match_detection(
+                        frame_np, det["bbox"], ally_candidate_keys
+                    )
+                    if match:
+                        det["champion_vote_key"] = match["key"]
+                        det["champion_vote_name"] = match["name"]
+                        det["champion_vote_score"] = match["score"]
 
         if tracker is not None and detections:
             detections = tracker.update(detections)
@@ -211,55 +225,82 @@ async def run_extraction_pipeline(
         champion_id = _get_champion_identifier()
         enable_champion_id = champion_id.available
 
+        # Number of initial frames to buffer for multi-frame portrait identification
+        PORTRAIT_SAMPLE_FRAMES = 5
+
+        def _run_champion_identification(portrait_frames: list) -> tuple[dict, list[str]]:
+            """Identify champions from buffered portrait frames.
+
+            Returns (game_champions dict, ally_candidate_keys list).
+            """
+            game_champions: dict = {"player": None, "allies": []}
+
+            if played_champion_name:
+                game_champions["player"] = {
+                    "key": played_champion_name,
+                    "name": played_champion_name,
+                    "confidence": 1.0,
+                }
+                logger.info("Player champion (user-specified): %s", played_champion_name)
+
+            if enable_champion_id and portrait_frames:
+                try:
+                    auto = champion_id.identify_from_portraits_multi(
+                        portrait_frames, width, height,
+                        n_samples=min(PORTRAIT_SAMPLE_FRAMES, len(portrait_frames)),
+                    )
+                    if not played_champion_name and auto.get("player"):
+                        game_champions["player"] = auto["player"]
+                    game_champions["allies"] = auto.get("allies", [])
+                    logger.info(
+                        "Champion roster (%d frames): player=%s, allies=%s",
+                        len(portrait_frames),
+                        game_champions["player"]["name"] if game_champions["player"] else "unknown",
+                        [a["name"] for a in game_champions["allies"]],
+                    )
+                except Exception:
+                    logger.exception("Champion identification failed")
+
+            # Extract ally keys for detection matching
+            ally_keys = [
+                a["key"] for a in game_champions.get("allies", [])
+                if a.get("key") and a["key"] != "unknown"
+            ]
+            return game_champions, ally_keys
+
         def _extract_all() -> list[dict]:
             nonlocal prev_ocr, prev_ts
             all_payloads = []
             game_champions: dict | None = None
+            ally_candidate_keys: list[str] = []
             tracker = SimpleTracker()
             count = 0
             frame_buffer: list[tuple] = []
+            portrait_frames: list = []
+            champion_id_done = False
 
             for frame_idx, ts_ms, frame_np in sample_frames(video_path, fps=sample_fps):
-                # On first frame, identify champions
-                if count == 0:
-                    game_champions = {"player": None, "allies": []}
+                # Buffer early frames for multi-frame portrait identification
+                if count < PORTRAIT_SAMPLE_FRAMES:
+                    portrait_frames.append(frame_np)
 
-                    # User-specified played champion takes priority
-                    if played_champion_name:
-                        game_champions["player"] = {
-                            "key": played_champion_name,
-                            "name": played_champion_name,
-                            "confidence": 1.0,
-                        }
-                        logger.info("Player champion (user-specified): %s", played_champion_name)
-
-                    # Auto-identify from HUD portraits (icons-only for accuracy)
-                    if enable_champion_id:
-                        try:
-                            auto = champion_id.identify_from_portraits(
-                                frame_np, width, height
-                            )
-                            # Use auto player only if user didn't specify
-                            if not played_champion_name and auto.get("player"):
-                                game_champions["player"] = auto["player"]
-                            game_champions["allies"] = auto.get("allies", [])
-                            logger.info(
-                                "Champion roster: player=%s, allies=%s",
-                                game_champions["player"]["name"] if game_champions["player"] else "unknown",
-                                [a["name"] for a in game_champions["allies"]],
-                            )
-                        except Exception:
-                            logger.exception("Champion identification failed on first frame")
+                # Run champion ID once we have enough portrait samples
+                if not champion_id_done and count == PORTRAIT_SAMPLE_FRAMES - 1:
+                    game_champions, ally_candidate_keys = _run_champion_identification(portrait_frames)
+                    champion_id_done = True
+                    portrait_frames.clear()
 
                 frame_buffer.append((frame_idx, ts_ms, frame_np))
                 count += 1
 
-                # Process batch when full
-                if len(frame_buffer) >= DETECTION_BATCH_SIZE:
+                # Process batch when full (only after champion ID is done)
+                if len(frame_buffer) >= DETECTION_BATCH_SIZE and champion_id_done:
                     payloads = _process_frame_batch(
                         frame_buffer, video_id, job_id, width, height,
                         enable_ocr, detector, tracker, crop_output_dir,
                         prev_ocr, prev_ts, game_champions=game_champions,
+                        champion_identifier=champion_id if ally_candidate_keys else None,
+                        ally_candidate_keys=ally_candidate_keys or None,
                     )
                     all_payloads.extend(payloads)
                     prev_ocr = payloads[-1]["ocr_data"]
@@ -269,12 +310,20 @@ async def run_extraction_pipeline(
                     if count % 10 == 0:
                         logger.info("Extracted %d/%d frames...", count, estimated_total)
 
+            # If champion ID never ran (video shorter than PORTRAIT_SAMPLE_FRAMES), do it now
+            if not champion_id_done:
+                game_champions, ally_candidate_keys = _run_champion_identification(portrait_frames)
+                champion_id_done = True
+                portrait_frames.clear()
+
             # Flush remaining frames
             if frame_buffer:
                 payloads = _process_frame_batch(
                     frame_buffer, video_id, job_id, width, height,
                     enable_ocr, detector, tracker, crop_output_dir,
                     prev_ocr, prev_ts, game_champions=game_champions,
+                    champion_identifier=champion_id if ally_candidate_keys else None,
+                    ally_candidate_keys=ally_candidate_keys or None,
                 )
                 all_payloads.extend(payloads)
                 live_progress[job_id] = {"extracted": count, "total": estimated_total, "phase": "extracting"}
